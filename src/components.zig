@@ -52,4 +52,32 @@ pub const Vertex = struct {
     color: [3]f32,
 };
 
+/// Sprite3D component for rendering textured quads
+pub const Sprite3D = struct {
+    /// The texture to render (passed by value from Assets resource)
+    texture: *const assets.Texture,
+
+    pub const __trait__ = Renderable;
+};
+
+pub const Renderable = struct {};
+
+/// Vertex data for sprite rendering
+pub const SpriteVertex = struct {
+    /// Position in 2D clip space [-1, 1]
+    pos: [2]f32,
+    /// Texture coordinates [0, 1]
+    uv: [2]f32,
+    /// RGBA color/tint
+    color: [4]f32,
+};
+
+/// 3D Transform component (simplified for now)
+pub const Transform3d = struct {
+    translation: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    rotation: [3]f32 = .{ 0.0, 0.0, 0.0 },
+    scale: [3]f32 = .{ 1.0, 1.0, 1.0 },
+};
+
 const std = @import("std");
+const assets = @import("assets.zig");

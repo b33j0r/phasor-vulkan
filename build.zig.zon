@@ -17,6 +17,10 @@
             .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.328.1.tar.gz",
             .hash = "N-V-__8AABOz_AEglqwsMBpjAnOSgdNkuJxvSMGAlGOQr-l3",
         },
+        .zigimg = .{
+            .url = "git+https://github.com/zigimg/zigimg#f5783e87627cbd9e0b45fad112e9f73503914f36",
+            .hash = "zigimg-0.1.0-8_eo2vBrFQBhsrLpexdcDQY-zrlzkyFZfKuYX-Nry6KN",
+        },
     },
     .minimum_zig_version = "0.15.1",
     .paths = .{""},

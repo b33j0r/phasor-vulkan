@@ -21,6 +21,13 @@ pub fn build(b: *std.Build) void {
     const phasor_ecs_mod = phasor_ecs_dep.module("phasor-ecs");
     const phasor_common_mod = phasor_ecs_dep.module("phasor-common");
 
+    // zigimg for PNG loading
+    const zigimg_dep = b.dependency("zigimg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zigimg_mod = zigimg_dep.module("zigimg");
+
     //
     // ─── BUILD GLFW C LIB ──────────────────────────────────────────
     //
@@ -109,6 +116,8 @@ pub fn build(b: *std.Build) void {
     const shader_files = [_]ShaderFile{
         .{ .src = "shaders/triangle.vert", .dst = "shaders/triangle.vert.spv" },
         .{ .src = "shaders/triangle.frag", .dst = "shaders/triangle.frag.spv" },
+        .{ .src = "shaders/sprite.vert", .dst = "shaders/sprite.vert.spv" },
+        .{ .src = "shaders/sprite.frag", .dst = "shaders/sprite.frag.spv" },
     };
 
     // Compile shaders and collect their outputs
@@ -124,7 +133,7 @@ pub fn build(b: *std.Build) void {
 
     // Generate shader imports module and add compiled shaders to it
     const write_shader_imports = b.addWriteFiles();
-    const shader_imports_path = write_shader_imports.add("shaders.zig", generateShaderImports(shader_files[0..]));
+    const shader_imports_path = write_shader_imports.add("shaders.zig", generateShaderImports());
 
     // Copy compiled shaders into the writeFiles directory
     inline for (shader_files, 0..) |shader, i| {
@@ -155,6 +164,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
             .{ .name = "phasor-common", .module = phasor_common_mod },
             .{ .name = "glfw", .module = glfw_mod },
+            .{ .name = "zigimg", .module = zigimg_mod },
         },
     });
 
@@ -199,12 +209,48 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_examples_triangle.step);
 
     b.installArtifact(examples_triangle);
+
+    //
+    // ─── SPRITES EXAMPLE ───────────────────────────────────────────
+    //
+    const examples_sprites_mod = b.addModule("examples-sprites", .{
+        .root_source_file = b.path("examples/sprites/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-vulkan", .module = phasor_vulkan_mod },
+            .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
+            .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+        },
+    });
+
+    const examples_sprites = b.addExecutable(.{
+        .name = "examples-sprites",
+        .root_module = examples_sprites_mod,
+    });
+
+    examples_sprites.linkLibC();
+    examples_sprites.linkLibrary(glfw_lib);
+    examples_sprites.linkSystemLibrary("vulkan");
+
+    if (target.result.os.tag.isDarwin()) {
+        examples_sprites.linkFramework("Cocoa");
+        examples_sprites.linkFramework("IOKit");
+        examples_sprites.linkFramework("CoreVideo");
+        examples_sprites.linkSystemLibrary("objc");
+    }
+
+    const run_examples_sprites = b.addRunArtifact(examples_sprites);
+    const sprites_step = b.step("sprites", "Run sprites example");
+    sprites_step.dependOn(&run_examples_sprites.step);
+
+    b.installArtifact(examples_sprites);
 }
 
 const ShaderFile = struct { src: []const u8, dst: []const u8 };
 
-fn generateShaderImports(shader_files: []const ShaderFile) []const u8 {
-    _ = shader_files;
+fn generateShaderImports() []const u8 {
     // Simple static generation - shaders are embedded by filename only (in same dir as this file)
     return
         \\// Auto-generated shader imports
@@ -212,6 +258,8 @@ fn generateShaderImports(shader_files: []const ShaderFile) []const u8 {
         \\
         \\pub const triangle_vert align(@alignOf(u32)) = @embedFile("triangle.vert.spv").*;
         \\pub const triangle_frag align(@alignOf(u32)) = @embedFile("triangle.frag.spv").*;
+        \\pub const sprite_vert align(@alignOf(u32)) = @embedFile("sprite.vert.spv").*;
+        \\pub const sprite_frag align(@alignOf(u32)) = @embedFile("sprite.frag.spv").*;
         \\
     ;
 }

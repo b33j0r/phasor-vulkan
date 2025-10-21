@@ -8,7 +8,7 @@ pub fn build(self: *RenderPlugin, app: *App) !void {
     try app.addSystem("VkRenderDeinit", deinit_system);
 }
 
-const RenderResource = struct {
+pub const RenderResource = struct {
     allocator: std.mem.Allocator,
 
     // Render pass and framebuffers
@@ -24,14 +24,21 @@ const RenderResource = struct {
     render_finished: []vk.Semaphore,
     in_flight: []vk.Fence,
 
-    // Graphics pipeline
+    // Triangle pipeline
     pipeline_layout: vk.PipelineLayout,
     pipeline: vk.Pipeline,
-
-    // Vertex buffer
     vertex_buffer: vk.Buffer,
     vertex_memory: vk.DeviceMemory,
     max_vertices: u32,
+
+    // Sprite pipeline
+    sprite_descriptor_set_layout: vk.DescriptorSetLayout,
+    sprite_descriptor_pool: vk.DescriptorPool,
+    sprite_pipeline_layout: vk.PipelineLayout,
+    sprite_pipeline: vk.Pipeline,
+    sprite_vertex_buffer: vk.Buffer,
+    sprite_vertex_memory: vk.DeviceMemory,
+    max_sprite_vertices: u32,
 };
 
 fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResource), r_clear: ResOpt(ClearColor)) !void {
@@ -88,6 +95,56 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         vkd.freeMemory(vertex_buffer_info.memory, null);
     }
 
+    // Create sprite descriptor set layout
+    const sampler_binding = vk.DescriptorSetLayoutBinding{
+        .binding = 0,
+        .descriptor_type = .combined_image_sampler,
+        .descriptor_count = 1,
+        .stage_flags = .{ .fragment_bit = true },
+        .p_immutable_samplers = null,
+    };
+
+    const sprite_descriptor_set_layout = try vkd.createDescriptorSetLayout(&.{
+        .binding_count = 1,
+        .p_bindings = @ptrCast(&sampler_binding),
+    }, null);
+    errdefer vkd.destroyDescriptorSetLayout(sprite_descriptor_set_layout, null);
+
+    // Create sprite descriptor pool (large enough for many textures)
+    const pool_size = vk.DescriptorPoolSize{
+        .@"type" = .combined_image_sampler,
+        .descriptor_count = 100, // Support up to 100 textures
+    };
+
+    const sprite_descriptor_pool = try vkd.createDescriptorPool(&.{
+        .pool_size_count = 1,
+        .p_pool_sizes = @ptrCast(&pool_size),
+        .max_sets = 100,
+    }, null);
+    errdefer vkd.destroyDescriptorPool(sprite_descriptor_pool, null);
+
+    // Create sprite pipeline layout
+    const sprite_pipeline_layout = try vkd.createPipelineLayout(&.{
+        .flags = .{},
+        .set_layout_count = 1,
+        .p_set_layouts = @ptrCast(&sprite_descriptor_set_layout),
+        .push_constant_range_count = 0,
+        .p_push_constant_ranges = undefined,
+    }, null);
+    errdefer vkd.destroyPipelineLayout(sprite_pipeline_layout, null);
+
+    // Create sprite pipeline
+    const sprite_pipeline = try createSpritePipeline(vkd, sprite_pipeline_layout, render_pass, swap.extent);
+    errdefer vkd.destroyPipeline(sprite_pipeline, null);
+
+    // Create sprite vertex buffer
+    const max_sprite_vertices: u32 = 6000; // 1000 sprites * 6 vertices
+    const sprite_vertex_buffer_info = try createSpriteVertexBuffer(vkd, dev_res, max_sprite_vertices);
+    errdefer {
+        vkd.destroyBuffer(sprite_vertex_buffer_info.buffer, null);
+        vkd.freeMemory(sprite_vertex_buffer_info.memory, null);
+    }
+
     try commands.insertResource(RenderResource{
         .allocator = allocator,
         .render_pass = render_pass,
@@ -102,6 +159,13 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         .vertex_buffer = vertex_buffer_info.buffer,
         .vertex_memory = vertex_buffer_info.memory,
         .max_vertices = max_vertices,
+        .sprite_descriptor_set_layout = sprite_descriptor_set_layout,
+        .sprite_descriptor_pool = sprite_descriptor_pool,
+        .sprite_pipeline_layout = sprite_pipeline_layout,
+        .sprite_pipeline = sprite_pipeline,
+        .sprite_vertex_buffer = sprite_vertex_buffer_info.buffer,
+        .sprite_vertex_memory = sprite_vertex_buffer_info.memory,
+        .max_sprite_vertices = max_sprite_vertices,
     });
 
     std.log.info("Vulkan RenderPlugin: initialized", .{});
@@ -370,6 +434,154 @@ fn createGraphicsPipeline(vkd: anytype, layout: vk.PipelineLayout, render_pass: 
     return pipeline;
 }
 
+fn createSpritePipeline(vkd: anytype, layout: vk.PipelineLayout, render_pass: vk.RenderPass, extent: vk.Extent2D) !vk.Pipeline {
+    _ = extent;
+
+    const shaders = @import("shader_imports");
+    const vert_spv = shaders.sprite_vert;
+    const frag_spv = shaders.sprite_frag;
+
+    const vert_module = try vkd.createShaderModule(&.{
+        .code_size = vert_spv.len,
+        .p_code = @ptrCast(@alignCast(&vert_spv)),
+    }, null);
+    defer vkd.destroyShaderModule(vert_module, null);
+
+    const frag_module = try vkd.createShaderModule(&.{
+        .code_size = frag_spv.len,
+        .p_code = @ptrCast(@alignCast(&frag_spv)),
+    }, null);
+    defer vkd.destroyShaderModule(frag_module, null);
+
+    const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
+        .{ .stage = .{ .vertex_bit = true }, .module = vert_module, .p_name = "main" },
+        .{ .stage = .{ .fragment_bit = true }, .module = frag_module, .p_name = "main" },
+    };
+
+    const vertex_binding = vk.VertexInputBindingDescription{
+        .binding = 0,
+        .stride = @sizeOf(components.SpriteVertex),
+        .input_rate = .vertex,
+    };
+
+    const vertex_attributes = [_]vk.VertexInputAttributeDescription{
+        .{ .binding = 0, .location = 0, .format = .r32g32_sfloat, .offset = @offsetOf(components.SpriteVertex, "pos") },
+        .{ .binding = 0, .location = 1, .format = .r32g32_sfloat, .offset = @offsetOf(components.SpriteVertex, "uv") },
+        .{ .binding = 0, .location = 2, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(components.SpriteVertex, "color") },
+    };
+
+    const vertex_input = vk.PipelineVertexInputStateCreateInfo{
+        .vertex_binding_description_count = 1,
+        .p_vertex_binding_descriptions = @ptrCast(&vertex_binding),
+        .vertex_attribute_description_count = vertex_attributes.len,
+        .p_vertex_attribute_descriptions = &vertex_attributes,
+    };
+
+    const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
+        .topology = .triangle_list,
+        .primitive_restart_enable = .false,
+    };
+
+    const viewport_state = vk.PipelineViewportStateCreateInfo{
+        .viewport_count = 1,
+        .p_viewports = undefined,
+        .scissor_count = 1,
+        .p_scissors = undefined,
+    };
+
+    const rasterization = vk.PipelineRasterizationStateCreateInfo{
+        .depth_clamp_enable = .false,
+        .rasterizer_discard_enable = .false,
+        .polygon_mode = .fill,
+        .cull_mode = .{}, // No culling for sprites
+        .front_face = .clockwise,
+        .depth_bias_enable = .false,
+        .depth_bias_constant_factor = 0,
+        .depth_bias_clamp = 0,
+        .depth_bias_slope_factor = 0,
+        .line_width = 1,
+    };
+
+    const multisample = vk.PipelineMultisampleStateCreateInfo{
+        .rasterization_samples = .{ .@"1_bit" = true },
+        .sample_shading_enable = .false,
+        .min_sample_shading = 1,
+        .alpha_to_coverage_enable = .false,
+        .alpha_to_one_enable = .false,
+    };
+
+    // Enable alpha blending for transparency
+    const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
+        .blend_enable = .true,
+        .src_color_blend_factor = .src_alpha,
+        .dst_color_blend_factor = .one_minus_src_alpha,
+        .color_blend_op = .add,
+        .src_alpha_blend_factor = .one,
+        .dst_alpha_blend_factor = .zero,
+        .alpha_blend_op = .add,
+        .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true, .a_bit = true },
+    };
+
+    const color_blend = vk.PipelineColorBlendStateCreateInfo{
+        .logic_op_enable = .false,
+        .logic_op = .copy,
+        .attachment_count = 1,
+        .p_attachments = @ptrCast(&color_blend_attachment),
+        .blend_constants = [_]f32{ 0, 0, 0, 0 },
+    };
+
+    const dynamic_states = [_]vk.DynamicState{ .viewport, .scissor };
+    const dynamic_state = vk.PipelineDynamicStateCreateInfo{
+        .flags = .{},
+        .dynamic_state_count = dynamic_states.len,
+        .p_dynamic_states = &dynamic_states,
+    };
+
+    const pipeline_info = vk.GraphicsPipelineCreateInfo{
+        .flags = .{},
+        .stage_count = 2,
+        .p_stages = &shader_stages,
+        .p_vertex_input_state = &vertex_input,
+        .p_input_assembly_state = &input_assembly,
+        .p_tessellation_state = null,
+        .p_viewport_state = &viewport_state,
+        .p_rasterization_state = &rasterization,
+        .p_multisample_state = &multisample,
+        .p_depth_stencil_state = null,
+        .p_color_blend_state = &color_blend,
+        .p_dynamic_state = &dynamic_state,
+        .layout = layout,
+        .render_pass = render_pass,
+        .subpass = 0,
+        .base_pipeline_handle = .null_handle,
+        .base_pipeline_index = -1,
+    };
+
+    var pipeline: vk.Pipeline = undefined;
+    _ = try vkd.createGraphicsPipelines(.null_handle, 1, @ptrCast(&pipeline_info), null, @ptrCast(&pipeline));
+
+    return pipeline;
+}
+
+fn createSpriteVertexBuffer(vkd: anytype, dev_res: *const DeviceResource, max_vertices: u32) !VertexBufferInfo {
+    const buffer_size = @sizeOf(components.SpriteVertex) * max_vertices;
+
+    const buffer = try vkd.createBuffer(&.{
+        .size = buffer_size,
+        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    errdefer vkd.destroyBuffer(buffer, null);
+
+    const mem_reqs = vkd.getBufferMemoryRequirements(buffer);
+    const memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .device_local_bit = true });
+    errdefer vkd.freeMemory(memory, null);
+
+    try vkd.bindBufferMemory(buffer, memory, 0);
+
+    return .{ .buffer = buffer, .memory = memory };
+}
+
 fn allocateMemory(vkd: anytype, dev_res: *const DeviceResource, requirements: vk.MemoryRequirements, properties: vk.MemoryPropertyFlags) !vk.DeviceMemory {
     const mem_props = dev_res.memory_properties;
 
@@ -402,6 +614,7 @@ fn render_system(
     r_rend: ResOpt(RenderResource),
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
+    q_sprites: Query(.{components.Sprite3D}),
 ) !void {
     _ = r_bounds;
     _ = commands;
@@ -442,8 +655,64 @@ fn render_system(
         try uploadVertices(vkd, dev_res, rr.cmd_pool, rr.vertex_buffer, vertices.items);
     }
 
+    // Collect sprite vertices from ECS
+    var sprite_vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 100);
+    defer sprite_vertices.deinit(rr.allocator);
+
+    var sprite_it = q_sprites.iterator();
+    while (sprite_it.next()) |entity| {
+        if (entity.get(components.Sprite3D)) |_| {
+            // Generate quad (2 triangles = 6 vertices)
+            const half_w: f32 = 0.5;
+            const half_h: f32 = 0.5;
+
+            // Get transform if available, otherwise use identity
+            const pos = if (entity.get(Transform3d)) |xf| .{ xf.translation[0], xf.translation[1] } else .{ 0.0, 0.0 };
+            const color: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 }; // White tint
+
+            // Triangle 1
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] - half_w, pos[1] - half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] + half_w, pos[1] - half_h }, .uv = .{ 1.0, 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] + half_w, pos[1] + half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
+
+            // Triangle 2
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] + half_w, pos[1] + half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] - half_w, pos[1] + half_h }, .uv = .{ 0.0, 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] - half_w, pos[1] - half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
+        }
+    }
+
+    // Upload sprite vertices to GPU if any exist
+    if (sprite_vertices.items.len > 0) {
+        try uploadSpriteVertices(vkd, dev_res, rr.cmd_pool, rr.sprite_vertex_buffer, sprite_vertices.items);
+    }
+
+    // Collect all unique textures from sprites for descriptor set creation
+    var texture_descriptors = try std.ArrayList(*const assets.Texture).initCapacity(rr.allocator, 10);
+    defer texture_descriptors.deinit(rr.allocator);
+
+    var tex_sprite_it = q_sprites.iterator();
+    while (tex_sprite_it.next()) |entity| {
+        if (entity.get(components.Sprite3D)) |sprite| {
+            // For simplicity, assume one texture for now
+            var found = false;
+            for (texture_descriptors.items) |tex| {
+                if (tex == sprite.texture) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try texture_descriptors.append(rr.allocator, sprite.texture);
+            }
+        }
+    }
+
+    // Reset descriptor pool for this frame
+    try vkd.resetDescriptorPool(rr.sprite_descriptor_pool, .{});
+
     // Record command buffer
-    try recordCommandBuffer(vkd, rr, swap, img_idx, clear_color, @intCast(vertices.items.len));
+    try recordCommandBuffer(vkd, rr, swap, img_idx, clear_color, @intCast(vertices.items.len), @intCast(sprite_vertices.items.len), texture_descriptors.items);
 
     // Submit
     const wait_stages = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
@@ -482,6 +751,8 @@ fn recordCommandBuffer(
     img_idx: usize,
     clear_color: ClearColor,
     vertex_count: u32,
+    sprite_vertex_count: u32,
+    textures: []const *const assets.Texture,
 ) !void {
     const cmdbuf = rr.cmd_buffers[img_idx];
 
@@ -518,12 +789,58 @@ fn recordCommandBuffer(
         .p_clear_values = @ptrCast(&clear_value),
     }, .@"inline");
 
-    vkd.cmdBindPipeline(cmdbuf, .graphics, rr.pipeline);
-
+    // Draw triangles
     if (vertex_count > 0) {
+        vkd.cmdBindPipeline(cmdbuf, .graphics, rr.pipeline);
         const offset = [_]vk.DeviceSize{0};
         vkd.cmdBindVertexBuffers(cmdbuf, 0, 1, @ptrCast(&rr.vertex_buffer), &offset);
         vkd.cmdDraw(cmdbuf, vertex_count, 1, 0, 0);
+    }
+
+    // Draw sprites
+    if (sprite_vertex_count > 0 and textures.len > 0) {
+        vkd.cmdBindPipeline(cmdbuf, .graphics, rr.sprite_pipeline);
+
+        // For simplicity, use the first texture for all sprites for now
+        const texture = textures[0];
+        if (texture.image_view) |view| {
+            if (texture.sampler) |sampler| {
+                // Create a descriptor set for this texture
+                var descriptor_set: vk.DescriptorSet = undefined;
+                try vkd.allocateDescriptorSets(&.{
+                    .descriptor_pool = rr.sprite_descriptor_pool,
+                    .descriptor_set_count = 1,
+                    .p_set_layouts = @ptrCast(&rr.sprite_descriptor_set_layout),
+                }, @ptrCast(&descriptor_set));
+
+                // Update descriptor set
+                const image_info = vk.DescriptorImageInfo{
+                    .sampler = sampler,
+                    .image_view = view,
+                    .image_layout = .shader_read_only_optimal,
+                };
+
+                const write_descriptor = vk.WriteDescriptorSet{
+                    .dst_set = descriptor_set,
+                    .dst_binding = 0,
+                    .dst_array_element = 0,
+                    .descriptor_count = 1,
+                    .descriptor_type = .combined_image_sampler,
+                    .p_image_info = @ptrCast(&image_info),
+                    .p_buffer_info = undefined,
+                    .p_texel_buffer_view = undefined,
+                };
+
+                vkd.updateDescriptorSets(1, @ptrCast(&write_descriptor), 0, undefined);
+
+                // Bind descriptor set and draw
+                vkd.cmdBindDescriptorSets(cmdbuf, .graphics, rr.sprite_pipeline_layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
+
+                const sprite_offset = [_]vk.DeviceSize{0};
+                vkd.cmdBindVertexBuffers(cmdbuf, 0, 1, @ptrCast(&rr.sprite_vertex_buffer), &sprite_offset);
+                vkd.cmdDraw(cmdbuf, sprite_vertex_count, 1, 0, 0);
+            }
+        }
     }
 
     vkd.cmdEndRenderPass(cmdbuf);
@@ -583,6 +900,56 @@ fn uploadVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.Command
     try vkd.queueWaitIdle(gfx_q);
 }
 
+fn uploadSpriteVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.CommandPool, dst_buffer: vk.Buffer, vertices: []const components.SpriteVertex) !void {
+    const size = @sizeOf(components.SpriteVertex) * vertices.len;
+
+    const staging_buffer = try vkd.createBuffer(&.{
+        .size = size,
+        .usage = .{ .transfer_src_bit = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    defer vkd.destroyBuffer(staging_buffer, null);
+
+    const mem_reqs = vkd.getBufferMemoryRequirements(staging_buffer);
+    const staging_memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+    defer vkd.freeMemory(staging_memory, null);
+
+    try vkd.bindBufferMemory(staging_buffer, staging_memory, 0);
+
+    {
+        const data = try vkd.mapMemory(staging_memory, 0, vk.WHOLE_SIZE, .{});
+        defer vkd.unmapMemory(staging_memory);
+
+        const gpu_vertices: [*]components.SpriteVertex = @ptrCast(@alignCast(data));
+        @memcpy(gpu_vertices[0..vertices.len], vertices);
+    }
+
+    var cmdbuf_handle: vk.CommandBuffer = undefined;
+    try vkd.allocateCommandBuffers(&.{
+        .command_pool = pool,
+        .level = .primary,
+        .command_buffer_count = 1,
+    }, @ptrCast(&cmdbuf_handle));
+    defer vkd.freeCommandBuffers(pool, 1, @ptrCast(&cmdbuf_handle));
+
+    try vkd.beginCommandBuffer(cmdbuf_handle, &.{ .flags = .{ .one_time_submit_bit = true } });
+
+    const region = vk.BufferCopy{ .src_offset = 0, .dst_offset = 0, .size = size };
+    vkd.cmdCopyBuffer(cmdbuf_handle, staging_buffer, dst_buffer, 1, @ptrCast(&region));
+
+    try vkd.endCommandBuffer(cmdbuf_handle);
+
+    const submit = vk.SubmitInfo{
+        .command_buffer_count = 1,
+        .p_command_buffers = @ptrCast(&cmdbuf_handle),
+        .p_wait_dst_stage_mask = undefined,
+    };
+
+    const gfx_q = dev_res.graphics_queue.?;
+    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
+    try vkd.queueWaitIdle(gfx_q);
+}
+
 fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResource), r_rend: ResOpt(RenderResource)) !void {
     _ = r_swap;
 
@@ -591,10 +958,19 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResou
             if (dev.device_proxy) |vkd| {
                 try vkd.deviceWaitIdle();
 
+                // Destroy triangle resources
                 vkd.destroyBuffer(rr.vertex_buffer, null);
                 vkd.freeMemory(rr.vertex_memory, null);
                 vkd.destroyPipeline(rr.pipeline, null);
                 vkd.destroyPipelineLayout(rr.pipeline_layout, null);
+
+                // Destroy sprite resources
+                vkd.destroyBuffer(rr.sprite_vertex_buffer, null);
+                vkd.freeMemory(rr.sprite_vertex_memory, null);
+                vkd.destroyPipeline(rr.sprite_pipeline, null);
+                vkd.destroyPipelineLayout(rr.sprite_pipeline_layout, null);
+                vkd.destroyDescriptorPool(rr.sprite_descriptor_pool, null);
+                vkd.destroyDescriptorSetLayout(rr.sprite_descriptor_set_layout, null);
 
                 destroySyncObjects(vkd, rr.allocator, .{
                     .in_flight = rr.in_flight,
@@ -630,5 +1006,7 @@ const RenderBounds = phasor_common.RenderBounds;
 const ClearColor = phasor_common.ClearColor;
 
 const components = @import("../components.zig");
+const Transform3d = components.Transform3d;
+const assets = @import("../assets.zig");
 const DeviceResource = @import("../device/DevicePlugin.zig").DeviceResource;
 const SwapchainResource = @import("../swapchain/SwapchainPlugin.zig").SwapchainResource;
