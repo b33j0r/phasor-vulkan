@@ -40,8 +40,9 @@ pub const Camera3d = union(enum) {
         near: f32 = 0.1,
         far: f32 = 100.0,
     },
-    /// Matches the viewport size in pixels for pixel-perfect 2d games and overlays
-    /// Coordinates are in physical pixels, camera automatically accounts for DPI scale
+    /// Pixel-perfect camera using window coordinates
+    /// Window coordinates are DPI-independent (800x600 on all displays)
+    /// The system automatically scales to fill the physical framebuffer
     Viewport: struct {
         mode: enum {
             /// Top-left is (0,0), y increases downwards
@@ -49,9 +50,6 @@ pub const Camera3d = union(enum) {
             /// Center is (0,0), y increases upwards
             Center,
         } = .TopLeft,
-        /// Override DPI scale (1.0 = no scaling, 2.0 = render at 2x resolution)
-        /// If null, uses current ContentScale from system
-        scale_override: ?f32 = null,
     },
 };
 
@@ -75,6 +73,7 @@ pub const Vertex = struct {
 };
 
 /// Sprite3D component for rendering textured quads
+/// All dimensions and positions are in window coordinates (DPI-independent)
 pub const Sprite3D = struct {
     /// The texture to render (passed by value from Assets resource)
     texture: *const assets.Texture,
@@ -83,9 +82,10 @@ pub const Sprite3D = struct {
     size_mode: SizeMode = .Auto,
 
     pub const SizeMode = union(enum) {
-        /// Automatically size sprite to match texture dimensions (pixel-perfect)
+        /// Automatically size sprite to match texture pixel dimensions
+        /// A 1280x1280 texture = 1280x1280 window units
         Auto,
-        /// Manually specify sprite dimensions
+        /// Manually specify sprite dimensions in window coordinates
         Manual: struct {
             width: f32,
             height: f32,
@@ -108,6 +108,7 @@ pub const SpriteVertex = struct {
 };
 
 /// 3D Transform component (simplified for now)
+/// Translation is in window coordinates for Viewport camera
 pub const Transform3d = struct {
     translation: [3]f32 = .{ 0.0, 0.0, 0.0 },
     rotation: [3]f32 = .{ 0.0, 0.0, 0.0 },

@@ -25,7 +25,7 @@ fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(Gam
     _ = try mut_commands.createEntity(.{
         phasor_vulkan.Transform3d{
             .translation = .{ 0.0, 0.0, 0.0 },
-            .scale = .{ 1.0, 1.0, 1.0 },
+            .scale = .{ 0.5, 0.5, 0.5 },
         },
         phasor_vulkan.Sprite3D{
             .texture = &r_assets.ptr.planet_texture,
