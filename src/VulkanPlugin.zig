@@ -25,6 +25,8 @@ pub fn build(self: *VulkanPlugin, app: *App) !void {
     _ = try app.addSchedule("VkRenderInit");
     _ = try app.addSchedule("VkInitEnd");
 
+    _ = try app.addSchedule("VkSwapchainUpdate");
+    _ = try app.addSchedule("VkRenderUpdate");
     _ = try app.addSchedule("VkUpdate");
     _ = try app.addSchedule("VkRender");
 
@@ -49,11 +51,13 @@ pub fn build(self: *VulkanPlugin, app: *App) !void {
     _ = try app.scheduleBetween("VkDeviceDeinit", "VkSwapchainDeinit", "VkInstanceDeinit");
     _ = try app.scheduleBetween("VkInstanceDeinit", "VkDeviceDeinit", "VkDeinitEnd");
 
-    // Schedule VkUpdate between Update and Render
-    _ = try app.scheduleBetween("VkUpdate", "Update", "Render");
+    // Schedule VkSwapchainUpdate -> VkRenderUpdate -> VkUpdate between Update and Render
+    _ = try app.scheduleBetween("VkSwapchainUpdate", "Update", "VkRenderUpdate");
+    _ = try app.scheduleBetween("VkRenderUpdate", "VkSwapchainUpdate", "VkUpdate");
+    _ = try app.scheduleBetween("VkUpdate", "VkRenderUpdate", "Render");
 
     // Schedule VkRender between Render and EndFrame
-    _ = try app.scheduleBetween("VkRender", "VkUpdate", "EndFrame");
+    _ = try app.scheduleBetween("VkRender", "Render", "EndFrame");
 
     // Pass settings to sub-plugins where relevant
     self.instance_plugin = .{ .enable_validation = self.settings.enable_validation };

@@ -4,6 +4,7 @@ pub fn build(self: *RenderPlugin, app: *App) !void {
     _ = self;
     // VulkanPlugin creates precise schedules; we only register systems to them.
     try app.addSystem("VkRenderInit", init_system);
+    try app.addSystem("VkRenderUpdate", handle_resize_system);
     try app.addSystem("VkRender", render_system);
     try app.addSystem("VkRenderDeinit", deinit_system);
 }
@@ -112,7 +113,7 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
 
     // Create sprite descriptor pool (large enough for many textures)
     const pool_size = vk.DescriptorPoolSize{
-        .@"type" = .combined_image_sampler,
+        .type = .combined_image_sampler,
         .descriptor_count = 100, // Support up to 100 textures
     };
 
@@ -171,6 +172,40 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     std.log.info("Vulkan RenderPlugin: initialized", .{});
 }
 
+fn handle_resize_system(
+    commands: *Commands,
+    r_device: ResOpt(DeviceResource),
+    r_swap: ResOpt(SwapchainResource),
+    r_render: ResOpt(RenderResource),
+    event_reader: EventReader(phasor_common.WindowResized),
+) !void {
+    // Check if there's a resize event
+    const resize_event = event_reader.tryRecv() orelse return;
+
+    std.log.info("Vulkan RenderPlugin: handling window resize to {d}x{d}", .{ resize_event.width, resize_event.height });
+
+    const dev_res = r_device.ptr orelse return;
+    const vkd = dev_res.device_proxy orelse return;
+    const swap = r_swap.ptr orelse return;
+    const rr = r_render.ptr orelse return;
+
+    // Wait for device to be idle before recreating framebuffers
+    try vkd.deviceWaitIdle();
+
+    // Destroy old framebuffers
+    destroyFramebuffers(vkd, rr.allocator, rr.framebuffers);
+
+    // Recreate framebuffers with new swapchain dimensions
+    const new_framebuffers = try createFramebuffers(rr.allocator, vkd, rr.render_pass, swap);
+
+    // Update render resource with new framebuffers
+    var updated_resource = rr.*;
+    updated_resource.framebuffers = new_framebuffers;
+    try commands.insertResource(updated_resource);
+
+    std.log.info("Vulkan RenderPlugin: framebuffers recreated", .{});
+}
+
 const SyncObjects = struct {
     image_available: []vk.Semaphore,
     render_finished: []vk.Semaphore,
@@ -219,10 +254,7 @@ fn createRenderPass(vkd: anytype, format: vk.Format) !vk.RenderPass {
         .final_layout = .present_src_khr,
     };
 
-    const color_ref = vk.AttachmentReference{
-        .attachment = 0,
-        .layout = .color_attachment_optimal
-    };
+    const color_ref = vk.AttachmentReference{ .attachment = 0, .layout = .color_attachment_optimal };
 
     const subpass = vk.SubpassDescription{
         .pipeline_bind_point = .graphics,
@@ -269,11 +301,7 @@ fn allocateCommandBuffers(allocator: std.mem.Allocator, vkd: anytype, pool: vk.C
     const cmdbufs = try allocator.alloc(vk.CommandBuffer, count);
     errdefer allocator.free(cmdbufs);
 
-    try vkd.allocateCommandBuffers(&.{
-        .command_pool = pool,
-        .level = .primary,
-        .command_buffer_count = count
-    }, cmdbufs.ptr);
+    try vkd.allocateCommandBuffers(&.{ .command_pool = pool, .level = .primary, .command_buffer_count = count }, cmdbufs.ptr);
 
     return cmdbufs;
 }
@@ -614,7 +642,8 @@ fn render_system(
     r_rend: ResOpt(RenderResource),
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
-    q_sprites: Query(.{components.Sprite3D}),
+    q_sprites: Query(.{ components.Sprite3D, Transform3d }),
+    q_cameras: Query(.{components.Camera3d}),
 ) !void {
     _ = r_bounds;
     _ = commands;
@@ -626,6 +655,15 @@ fn render_system(
     const swap = r_swap.ptr orelse return;
     const rr = r_rend.ptr orelse return;
     const clear_color = if (r_clear.ptr) |cc| cc.* else ClearColor{};
+
+    // Find active camera to determine coordinate system
+    var camera_mode: ?components.Camera3d = null;
+    var cam_it = q_cameras.iterator();
+    if (cam_it.next()) |cam_entity| {
+        if (cam_entity.get(components.Camera3d)) |cam| {
+            camera_mode = cam.*;
+        }
+    }
 
     // Acquire next image
     const next_image_sem = rr.image_available[0];
@@ -659,26 +697,95 @@ fn render_system(
     var sprite_vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 100);
     defer sprite_vertices.deinit(rr.allocator);
 
+    // Calculate viewport dimensions for coordinate transformation
+    const viewport_width: f32 = @floatFromInt(swap.extent.width);
+    const viewport_height: f32 = @floatFromInt(swap.extent.height);
+
     var sprite_it = q_sprites.iterator();
     while (sprite_it.next()) |entity| {
-        if (entity.get(components.Sprite3D)) |_| {
-            // Generate quad (2 triangles = 6 vertices)
-            const half_w: f32 = 0.5;
-            const half_h: f32 = 0.5;
+        if (entity.get(components.Sprite3D)) |sprite| {
+            // Determine sprite size based on size_mode
+            var sprite_width: f32 = 1.0;
+            var sprite_height: f32 = 1.0;
+
+            switch (sprite.size_mode) {
+                .Auto => {
+                    // Use texture dimensions for pixel-perfect rendering
+                    sprite_width = @floatFromInt(sprite.texture.width);
+                    sprite_height = @floatFromInt(sprite.texture.height);
+                },
+                .Manual => |manual| {
+                    sprite_width = manual.width;
+                    sprite_height = manual.height;
+                },
+            }
 
             // Get transform if available, otherwise use identity
-            const pos = if (entity.get(Transform3d)) |xf| .{ xf.translation[0], xf.translation[1] } else .{ 0.0, 0.0 };
+            const transform = entity.get(Transform3d) orelse &Transform3d{};
+            const pos = transform.translation;
+            const scale = transform.scale;
+
+            // Apply scale to sprite size
+            const half_w = (sprite_width * scale[0]) / 2.0;
+            const half_h = (sprite_height * scale[1]) / 2.0;
+
             const color: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 }; // White tint
 
+            // Transform to clip space based on camera mode
+            var clip_x: f32 = pos[0];
+            var clip_y: f32 = pos[1];
+            var clip_half_w: f32 = half_w;
+            var clip_half_h: f32 = half_h;
+
+            if (camera_mode) |cam| {
+                switch (cam) {
+                    .Viewport => |vp| {
+                        // Transform from pixel/screen space to clip space [-1, 1]
+                        switch (vp.mode) {
+                            .Center => {
+                                // Center mode: (0,0) is center, y increases upwards
+                                // Transform to NDC: x/halfWidth, y/halfHeight
+                                clip_x = pos[0] / (viewport_width / 2.0);
+                                clip_y = pos[1] / (viewport_height / 2.0);
+                                clip_half_w = half_w / (viewport_width / 2.0);
+                                clip_half_h = half_h / (viewport_height / 2.0);
+                            },
+                            .TopLeft => {
+                                // TopLeft mode: (0,0) is top-left, y increases downwards
+                                // Transform: (x,y) -> (2*x/width - 1, 1 - 2*y/height)
+                                clip_x = 2.0 * pos[0] / viewport_width - 1.0;
+                                clip_y = 1.0 - 2.0 * pos[1] / viewport_height;
+                                clip_half_w = half_w / (viewport_width / 2.0);
+                                clip_half_h = half_h / (viewport_height / 2.0);
+                            },
+                        }
+                    },
+                    .Orthographic => |ortho| {
+                        // Transform using orthographic bounds
+                        const width = ortho.right - ortho.left;
+                        const height = ortho.top - ortho.bottom;
+                        clip_x = (pos[0] - ortho.left) / (width / 2.0) - 1.0;
+                        clip_y = (pos[1] - ortho.bottom) / (height / 2.0) - 1.0;
+                        clip_half_w = half_w / (width / 2.0);
+                        clip_half_h = half_h / (height / 2.0);
+                    },
+                    .Perspective => {
+                        // Perspective projection not implemented for sprites yet
+                        // Use identity transform
+                    },
+                }
+            }
+
+            // Generate quad (2 triangles = 6 vertices) in clip space
             // Triangle 1
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] - half_w, pos[1] - half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] + half_w, pos[1] - half_h }, .uv = .{ 1.0, 0.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] + half_w, pos[1] + half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x - clip_half_w, clip_y - clip_half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x + clip_half_w, clip_y - clip_half_h }, .uv = .{ 1.0, 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x + clip_half_w, clip_y + clip_half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
 
             // Triangle 2
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] + half_w, pos[1] + half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] - half_w, pos[1] + half_h }, .uv = .{ 0.0, 1.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ pos[0] - half_w, pos[1] - half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x + clip_half_w, clip_y + clip_half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x - clip_half_w, clip_y + clip_half_h }, .uv = .{ 0.0, 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x - clip_half_w, clip_y - clip_half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
         }
     }
 
@@ -1000,6 +1107,7 @@ const App = phasor_ecs.App;
 const Commands = phasor_ecs.Commands;
 const ResOpt = phasor_ecs.ResOpt;
 const Query = phasor_ecs.Query;
+const EventReader = phasor_ecs.EventReader;
 
 const phasor_common = @import("phasor-common");
 const RenderBounds = phasor_common.RenderBounds;

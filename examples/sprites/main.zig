@@ -11,7 +11,17 @@ const GameAssets = struct {
 };
 
 fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(GameAssets)) !void {
+    // Create a camera entity with Viewport.Center mode for pixel-perfect rendering
+    _ = try mut_commands.createEntity(.{
+        phasor_vulkan.Camera3d{
+            .Viewport = .{
+                .mode = .Center,
+            },
+        },
+    });
+
     // Create a sprite entity with the loaded texture (following raylib pattern)
+    // Using Auto size mode for pixel-perfect sizing
     _ = try mut_commands.createEntity(.{
         phasor_vulkan.Transform3d{
             .translation = .{ 0.0, 0.0, 0.0 },
@@ -19,6 +29,7 @@ fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(Gam
         },
         phasor_vulkan.Sprite3D{
             .texture = &r_assets.ptr.planet_texture,
+            .size_mode = .Auto, // Sprite will be sized to match texture dimensions
         },
     });
 }

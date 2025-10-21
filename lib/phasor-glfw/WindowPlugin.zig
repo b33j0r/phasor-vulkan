@@ -36,6 +36,9 @@ pub fn build(self: *WindowPlugin, app: *App) !void {
     // Make settings available to systems
     g_settings = self.settings;
 
+    // Register WindowResized event
+    try app.registerEvent(phasor_common.WindowResized, 8);
+
     // Insert "WindowInit" schedule between "PreStartup" and "Startup"
     _ = try app.addScheduleBetween("WindowInit", "PreStartup", "Startup");
     // Insert "WindowDeinit" schedule between "Shutdown" and "PostShutdown"
@@ -114,7 +117,7 @@ fn init_system(commands: *Commands, r_settings: ResOpt(WindowSettings)) !void {
     std.log.info("GLFW window initialized ({d}x{d})", .{ settings.width, settings.height });
 }
 
-fn update(commands: *Commands, r_window: ResOpt(Window)) !void {
+fn update(commands: *Commands, r_window: ResOpt(Window), r_bounds: ResOpt(WindowBounds), event_writer: EventWriter(phasor_common.WindowResized)) !void {
     if (r_window.ptr) |window_res| {
         const handle = window_res.handle orelse return;
         if (glfw.glfwWindowShouldClose(handle) != 0) {
@@ -129,14 +132,30 @@ fn update(commands: *Commands, r_window: ResOpt(Window)) !void {
         glfw.glfwGetFramebufferSize(handle, &w, &h);
 
         if (w > 0 and h > 0) {
-            try commands.insertResource(WindowBounds{
+            const new_bounds = WindowBounds{
                 .width = @intCast(w),
                 .height = @intCast(h),
-            });
+            };
+
+            // Check if size actually changed
+            const size_changed = if (r_bounds.ptr) |old_bounds|
+                old_bounds.width != new_bounds.width or old_bounds.height != new_bounds.height
+            else
+                true;
+
+            try commands.insertResource(new_bounds);
             try commands.insertResource(RenderBounds{
                 .width = @floatFromInt(w),
                 .height = @floatFromInt(h),
             });
+
+            // Emit resize event if size changed
+            if (size_changed) {
+                try event_writer.send(.{
+                    .width = new_bounds.width,
+                    .height = new_bounds.height,
+                });
+            }
         }
     }
 }
@@ -161,6 +180,7 @@ const App = phasor_ecs.App;
 const Exit = phasor_ecs.Exit;
 const ResOpt = phasor_ecs.ResOpt;
 const Commands = phasor_ecs.Commands;
+const EventWriter = phasor_ecs.EventWriter;
 
 const phasor_common = @import("phasor-common");
 const TargetFps = phasor_common.TargetFps;

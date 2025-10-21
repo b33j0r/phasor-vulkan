@@ -23,14 +23,32 @@ pub fn Layer3d(N: i32) type {
 pub const Layer3dN = struct {};
 
 /// A 3D camera component with orthographic projection.
-pub const Camera3d = struct {
-    mode: ProjectionMode = .Orthographic,
-    /// For orthographic: defines the half-width/height
-    ortho_size: f32 = 1.0,
-    /// For perspective: field of view in radians
-    fov: f32 = std.math.pi / 4.0,
-    near: f32 = 0.1,
-    far: f32 = 100.0,
+pub const Camera3d = union(enum) {
+    /// An orthographic camera with traditional left/right/top/bottom bounds
+    Orthographic: struct {
+        left: f32 = -1.0,
+        right: f32 = 1.0,
+        bottom: f32 = -1.0,
+        top: f32 = 1.0,
+        near: f32 = 0.1,
+        far: f32 = 100.0,
+    },
+    /// A perspective camera
+    Perspective: struct {
+        /// Field of view in radians
+        fov: f32 = std.math.pi / 4.0,
+        near: f32 = 0.1,
+        far: f32 = 100.0,
+    },
+    /// Matches the viewport size in pixels for pixel-perfect 2d games and overlays
+    Viewport: struct {
+        mode: enum {
+            /// Top-left is (0,0), y increases downwards
+            TopLeft,
+            /// Center is (0,0), y increases upwards
+            Center,
+        } = .TopLeft,
+    },
 };
 
 pub const ProjectionMode = enum {
@@ -56,6 +74,19 @@ pub const Vertex = struct {
 pub const Sprite3D = struct {
     /// The texture to render (passed by value from Assets resource)
     texture: *const assets.Texture,
+
+    /// How to size the sprite
+    size_mode: SizeMode = .Auto,
+
+    pub const SizeMode = union(enum) {
+        /// Automatically size sprite to match texture dimensions (pixel-perfect)
+        Auto,
+        /// Manually specify sprite dimensions
+        Manual: struct {
+            width: f32,
+            height: f32,
+        },
+    };
 
     pub const __trait__ = Renderable;
 };
