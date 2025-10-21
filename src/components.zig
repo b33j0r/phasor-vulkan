@@ -41,6 +41,7 @@ pub const Camera3d = union(enum) {
         far: f32 = 100.0,
     },
     /// Matches the viewport size in pixels for pixel-perfect 2d games and overlays
+    /// Coordinates are in physical pixels, camera automatically accounts for DPI scale
     Viewport: struct {
         mode: enum {
             /// Top-left is (0,0), y increases downwards
@@ -48,6 +49,9 @@ pub const Camera3d = union(enum) {
             /// Center is (0,0), y increases upwards
             Center,
         } = .TopLeft,
+        /// Override DPI scale (1.0 = no scaling, 2.0 = render at 2x resolution)
+        /// If null, uses current ContentScale from system
+        scale_override: ?f32 = null,
     },
 };
 

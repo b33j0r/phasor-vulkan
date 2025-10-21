@@ -16,14 +16,14 @@ pub fn build(self: *SwapchainPlugin, app: *App) !void {
     try app.addSystem("VkSwapchainDeinit", deinit_system);
 }
 
-fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_device: ResOpt(DeviceResource), r_bounds: ResOpt(WindowBounds)) !void {
+fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_device: ResOpt(DeviceResource), r_render_bounds: ResOpt(phasor_common.RenderBounds)) !void {
     const inst = r_instance.ptr orelse return error.MissingInstanceResource;
     const instance = inst.instance orelse return error.MissingInstance;
     const surface = inst.surface orelse return error.MissingSurface;
     const dev = r_device.ptr orelse return error.MissingDeviceResource;
     const device = dev.device_proxy orelse return error.MissingDevice;
     const phys = dev.physical_device orelse return error.MissingPhysicalDevice;
-    const bounds = r_bounds.ptr orelse return error.MissingWindowBounds;
+    const bounds = r_render_bounds.ptr orelse return error.MissingRenderBounds;
 
     // Choose surface format (prefer SRGB) and present mode (FIFO for portability)
     var fmt_count: u32 = 0;
@@ -48,9 +48,10 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_devi
     // Always use FIFO for maximum compatibility
     const present_mode: vk.PresentModeKHR = .fifo_khr;
 
+    // Use RenderBounds (physical pixels) for swapchain extent
     const extent = vk.Extent2D{
-        .width = @intCast(@max(@min(@as(u32, @intCast(bounds.width)), caps.max_image_extent.width), caps.min_image_extent.width)),
-        .height = @intCast(@max(@min(@as(u32, @intCast(bounds.height)), caps.max_image_extent.height), caps.min_image_extent.height)),
+        .width = @intCast(@max(@min(@as(u32, @intFromFloat(bounds.width)), caps.max_image_extent.width), caps.min_image_extent.width)),
+        .height = @intCast(@max(@min(@as(u32, @intFromFloat(bounds.height)), caps.max_image_extent.height), caps.min_image_extent.height)),
     };
 
     var image_count: u32 = caps.min_image_count + 1;
@@ -247,7 +248,6 @@ const ResOpt = phasor_ecs.ResOpt;
 const EventReader = phasor_ecs.EventReader;
 
 const phasor_common = @import("phasor-common");
-const WindowBounds = phasor_common.WindowBounds;
 
 const DeviceResource = @import("../device/DevicePlugin.zig").DeviceResource;
 const InstanceResource = @import("../instance/InstancePlugin.zig").InstanceResource;

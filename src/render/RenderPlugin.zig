@@ -638,14 +638,13 @@ fn render_system(
     commands: *Commands,
     r_device: ResOpt(DeviceResource),
     r_swap: ResOpt(SwapchainResource),
-    r_bounds: ResOpt(RenderBounds),
+    r_content_scale: ResOpt(phasor_common.ContentScale),
     r_rend: ResOpt(RenderResource),
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
     q_sprites: Query(.{ components.Sprite3D, Transform3d }),
     q_cameras: Query(.{components.Camera3d}),
 ) !void {
-    _ = r_bounds;
     _ = commands;
 
     const dev_res = r_device.ptr orelse return;
@@ -697,9 +696,8 @@ fn render_system(
     var sprite_vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 100);
     defer sprite_vertices.deinit(rr.allocator);
 
-    // Calculate viewport dimensions for coordinate transformation
-    const viewport_width: f32 = @floatFromInt(swap.extent.width);
-    const viewport_height: f32 = @floatFromInt(swap.extent.height);
+    // Get content scale for DPI-aware rendering
+    const content_scale = r_content_scale.ptr orelse return;
 
     var sprite_it = q_sprites.iterator();
     while (sprite_it.next()) |entity| {
@@ -710,11 +708,13 @@ fn render_system(
 
             switch (sprite.size_mode) {
                 .Auto => {
-                    // Use texture dimensions for pixel-perfect rendering
-                    sprite_width = @floatFromInt(sprite.texture.width);
-                    sprite_height = @floatFromInt(sprite.texture.height);
+                    // Use texture dimensions, scaled to logical pixels
+                    // A 1280x1280 texture on retina (2x) should display as 640x640 logical
+                    sprite_width = @as(f32, @floatFromInt(sprite.texture.width)) / content_scale.x;
+                    sprite_height = @as(f32, @floatFromInt(sprite.texture.height)) / content_scale.y;
                 },
                 .Manual => |manual| {
+                    // Manual dimensions are already in logical pixels
                     sprite_width = manual.width;
                     sprite_height = manual.height;
                 },
@@ -725,7 +725,7 @@ fn render_system(
             const pos = transform.translation;
             const scale = transform.scale;
 
-            // Apply scale to sprite size
+            // Apply transform scale to sprite size (in physical pixels)
             const half_w = (sprite_width * scale[0]) / 2.0;
             const half_h = (sprite_height * scale[1]) / 2.0;
 
@@ -740,23 +740,48 @@ fn render_system(
             if (camera_mode) |cam| {
                 switch (cam) {
                     .Viewport => |vp| {
-                        // Transform from pixel/screen space to clip space [-1, 1]
+                        // Get effective viewport size (physical pixels / content scale)
+                        // This converts physical pixels back to logical coordinate space
+                        // Retina: 1600px / 2.0 = 800 logical, Non-retina: 800px / 1.0 = 800 logical
+                        const cam_scale = vp.scale_override orelse content_scale.x;
+                        const physical_width: f32 = @floatFromInt(swap.extent.width);
+                        const physical_height: f32 = @floatFromInt(swap.extent.height);
+                        const effective_width = physical_width / cam_scale;
+                        const effective_height = physical_height / cam_scale;
+
+                        // Debug logging (only log first frame)
+                        const log_once = struct {
+                            var logged = false;
+                        };
+                        if (!log_once.logged) {
+                            std.log.info("Viewport: physical={d:.0}x{d:.0}, scale={d:.2}, effective={d:.0}x{d:.0}, sprite={d:.0}x{d:.0}", .{
+                                physical_width,
+                                physical_height,
+                                cam_scale,
+                                effective_width,
+                                effective_height,
+                                sprite_width,
+                                sprite_height,
+                            });
+                            log_once.logged = true;
+                        }
+
+                        // Transform from physical pixels to clip space [-1, 1]
+                        // Coordinates are in physical pixels, viewport is DPI-scaled
                         switch (vp.mode) {
                             .Center => {
                                 // Center mode: (0,0) is center, y increases upwards
-                                // Transform to NDC: x/halfWidth, y/halfHeight
-                                clip_x = pos[0] / (viewport_width / 2.0);
-                                clip_y = pos[1] / (viewport_height / 2.0);
-                                clip_half_w = half_w / (viewport_width / 2.0);
-                                clip_half_h = half_h / (viewport_height / 2.0);
+                                clip_x = pos[0] / (effective_width / 2.0);
+                                clip_y = pos[1] / (effective_height / 2.0);
+                                clip_half_w = half_w / (effective_width / 2.0);
+                                clip_half_h = half_h / (effective_height / 2.0);
                             },
                             .TopLeft => {
                                 // TopLeft mode: (0,0) is top-left, y increases downwards
-                                // Transform: (x,y) -> (2*x/width - 1, 1 - 2*y/height)
-                                clip_x = 2.0 * pos[0] / viewport_width - 1.0;
-                                clip_y = 1.0 - 2.0 * pos[1] / viewport_height;
-                                clip_half_w = half_w / (viewport_width / 2.0);
-                                clip_half_h = half_h / (viewport_height / 2.0);
+                                clip_x = 2.0 * pos[0] / effective_width - 1.0;
+                                clip_y = 1.0 - 2.0 * pos[1] / effective_height;
+                                clip_half_w = half_w / (effective_width / 2.0);
+                                clip_half_h = half_h / (effective_height / 2.0);
                             },
                         }
                     },
@@ -1110,7 +1135,6 @@ const Query = phasor_ecs.Query;
 const EventReader = phasor_ecs.EventReader;
 
 const phasor_common = @import("phasor-common");
-const RenderBounds = phasor_common.RenderBounds;
 const ClearColor = phasor_common.ClearColor;
 
 const components = @import("../components.zig");
