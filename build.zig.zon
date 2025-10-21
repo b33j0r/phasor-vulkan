@@ -1,0 +1,13 @@
+.{
+    .name = .phasor_vulkan,
+    .version = "0.0.1",
+    .dependencies = .{ .glfw = .{
+        .url = "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
+        .hash = "N-V-__8AAL40TADEbrysYHBl-UIZO4KiG4chP8pLDVDINGH4",
+    }, .phasor_ecs = .{
+        .path = "../phasor-ecs",
+    } },
+    .minimum_zig_version = "0.15.1",
+    .paths = .{""},
+    .fingerprint = 0xa01fedf56c9883cf,
+}
