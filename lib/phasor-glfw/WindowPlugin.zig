@@ -33,8 +33,6 @@ pub fn init(settings: WindowSettings) WindowPlugin {
 }
 
 pub fn build(self: *WindowPlugin, app: *App) !void {
-    try root.requireGlfwPlugin(app);
-
     // Make settings available to systems
     g_settings = self.settings;
 
