@@ -93,6 +93,13 @@ pub fn build(b: *std.Build) void {
     });
     glfw_mod.addIncludePath(glfw_include);
 
+    // Vulkan
+    const vulkan_headers_dep = b.dependency("vulkan_headers", .{});
+
+    const vulkan = b.dependency("vulkan", .{
+        .registry = vulkan_headers_dep.path("registry/vk.xml"),
+    }).module("vulkan-zig");
+
     //
     // ─── MODULES ───────────────────────────────────────────────────
     //
@@ -112,6 +119,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "vulkan", .module = vulkan },
             .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
             .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
             .{ .name = "phasor-common", .module = phasor_common_mod },

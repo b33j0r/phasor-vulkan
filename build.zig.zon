@@ -1,12 +1,23 @@
 .{
     .name = .phasor_vulkan,
     .version = "0.0.1",
-    .dependencies = .{ .glfw = .{
-        .url = "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
-        .hash = "N-V-__8AAL40TADEbrysYHBl-UIZO4KiG4chP8pLDVDINGH4",
-    }, .phasor_ecs = .{
-        .path = "../phasor-ecs",
-    } },
+    .dependencies = .{
+        .glfw = .{
+            .url = "https://github.com/glfw/glfw/archive/refs/tags/3.4.tar.gz",
+            .hash = "N-V-__8AAL40TADEbrysYHBl-UIZO4KiG4chP8pLDVDINGH4",
+        },
+        .phasor_ecs = .{
+            .path = "../phasor-ecs",
+        },
+        .vulkan = .{
+            .url = "git+https://github.com/Snektron/vulkan-zig?ref=zig-0.15-compat#f879074293f0e2f718c93fd19cc0a96260a3aa52",
+            .hash = "vulkan-0.0.0-r7Ytx6hBAwBUnt0XA-uOkR2hda4fAHFhQITNTgJpnFkY",
+        },
+        .vulkan_headers = .{
+            .url = "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/vulkan-sdk-1.4.328.1.tar.gz",
+            .hash = "N-V-__8AABOz_AEglqwsMBpjAnOSgdNkuJxvSMGAlGOQr-l3",
+        },
+    },
     .minimum_zig_version = "0.15.1",
     .paths = .{""},
     .fingerprint = 0xa01fedf56c9883cf,
