@@ -9,6 +9,7 @@ pub const DeviceResource = struct {
     present_queue: ?vk.Queue = null,
     graphics_family_index: ?u32 = null,
     present_family_index: ?u32 = null,
+    memory_properties: vk.PhysicalDeviceMemoryProperties = undefined,
 };
 
 pub fn build(self: *DevicePlugin, app: *App) !void {
@@ -64,6 +65,9 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource)) !void 
     const graphics_queue = device_proxy.getDeviceQueue(candidate.graphics_family, 0);
     const present_queue = device_proxy.getDeviceQueue(candidate.present_family, 0);
 
+    // Get memory properties
+    const mem_props = instance.getPhysicalDeviceMemoryProperties(candidate.pdev);
+
     const res: DeviceResource = .{
         .physical_device = candidate.pdev,
         .device = device_handle,
@@ -73,6 +77,7 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource)) !void 
         .present_queue = present_queue,
         .graphics_family_index = candidate.graphics_family,
         .present_family_index = candidate.present_family,
+        .memory_properties = mem_props,
     };
 
     try commands.insertResource(res);
