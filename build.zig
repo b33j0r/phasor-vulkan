@@ -123,8 +123,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
             .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
             .{ .name = "phasor-common", .module = phasor_common_mod },
+            .{ .name = "glfw", .module = glfw_mod },
         },
     });
+
 
     //
     // ─── EXAMPLES ──────────────────────────────────────────────────
