@@ -9,38 +9,143 @@ pub fn build(self: *RenderPlugin, app: *App) !void {
 }
 
 const RenderResource = struct {
-    render_pass: vk.RenderPass = .null_handle,
-    framebuffers: []vk.Framebuffer = &[_]vk.Framebuffer{},
-    cmd_pool: vk.CommandPool = .null_handle,
-    cmd_buffers: []vk.CommandBuffer = &[_]vk.CommandBuffer{},
-    image_available: []vk.Semaphore = &[_]vk.Semaphore{},
-    render_finished: []vk.Semaphore = &[_]vk.Semaphore{},
-    in_flight: []vk.Fence = &[_]vk.Fence{},
+    allocator: std.mem.Allocator,
 
-    // Triangle pipeline resources
-    pipeline_layout: vk.PipelineLayout = .null_handle,
-    pipeline: vk.Pipeline = .null_handle,
+    // Render pass and framebuffers
+    render_pass: vk.RenderPass,
+    framebuffers: []vk.Framebuffer,
+
+    // Command resources
+    cmd_pool: vk.CommandPool,
+    cmd_buffers: []vk.CommandBuffer,
+
+    // Synchronization primitives
+    image_available: []vk.Semaphore,
+    render_finished: []vk.Semaphore,
+    in_flight: []vk.Fence,
+
+    // Graphics pipeline
+    pipeline_layout: vk.PipelineLayout,
+    pipeline: vk.Pipeline,
 
     // Vertex buffer
-    vertex_buffer: vk.Buffer = .null_handle,
-    vertex_memory: vk.DeviceMemory = .null_handle,
-    vertex_buffer_size: vk.DeviceSize = 0,
-    max_vertices: u32 = 0,
+    vertex_buffer: vk.Buffer,
+    vertex_memory: vk.DeviceMemory,
+    max_vertices: u32,
 };
 
 fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResource), r_clear: ResOpt(ClearColor)) !void {
     const dev_res = r_device.ptr orelse return error.MissingDeviceResource;
     const vkd = dev_res.device_proxy orelse return error.MissingDevice;
     const swap = r_swap.ptr orelse return error.MissingSwapchainResource;
+    const allocator = std.heap.page_allocator;
 
-    // Ensure ClearColor exists; insert default if not provided
+    // Ensure ClearColor exists
     if (r_clear.ptr == null) {
         try commands.insertResource(ClearColor{});
     }
 
-    // Create a simple render pass with a single color attachment cleared and presented
+    // Create render pass
+    const render_pass = try createRenderPass(vkd, swap.surface_format.format);
+    errdefer vkd.destroyRenderPass(render_pass, null);
+
+    // Create framebuffers
+    const framebuffers = try createFramebuffers(allocator, vkd, render_pass, swap);
+    errdefer destroyFramebuffers(vkd, allocator, framebuffers);
+
+    // Create command pool and buffers
+    const cmd_pool = try vkd.createCommandPool(&.{
+        .queue_family_index = dev_res.graphics_family_index.?,
+        .flags = .{ .reset_command_buffer_bit = true },
+    }, null);
+    errdefer vkd.destroyCommandPool(cmd_pool, null);
+
+    const cmd_buffers = try allocateCommandBuffers(allocator, vkd, cmd_pool, @intCast(swap.views.len));
+    errdefer freeCommandBuffers(vkd, cmd_pool, allocator, cmd_buffers);
+
+    // Create synchronization objects
+    const sync = try createSyncObjects(allocator, vkd, @intCast(swap.views.len));
+    errdefer destroySyncObjects(vkd, allocator, sync);
+
+    // Create graphics pipeline
+    const pipeline_layout = try vkd.createPipelineLayout(&.{
+        .flags = .{},
+        .set_layout_count = 0,
+        .p_set_layouts = undefined,
+        .push_constant_range_count = 0,
+        .p_push_constant_ranges = undefined,
+    }, null);
+    errdefer vkd.destroyPipelineLayout(pipeline_layout, null);
+
+    const pipeline = try createGraphicsPipeline(vkd, pipeline_layout, render_pass, swap.extent);
+    errdefer vkd.destroyPipeline(pipeline, null);
+
+    // Create vertex buffer
+    const max_vertices: u32 = 3000;
+    const vertex_buffer_info = try createVertexBuffer(vkd, dev_res, max_vertices);
+    errdefer {
+        vkd.destroyBuffer(vertex_buffer_info.buffer, null);
+        vkd.freeMemory(vertex_buffer_info.memory, null);
+    }
+
+    try commands.insertResource(RenderResource{
+        .allocator = allocator,
+        .render_pass = render_pass,
+        .framebuffers = framebuffers,
+        .cmd_pool = cmd_pool,
+        .cmd_buffers = cmd_buffers,
+        .image_available = sync.image_available,
+        .render_finished = sync.render_finished,
+        .in_flight = sync.in_flight,
+        .pipeline_layout = pipeline_layout,
+        .pipeline = pipeline,
+        .vertex_buffer = vertex_buffer_info.buffer,
+        .vertex_memory = vertex_buffer_info.memory,
+        .max_vertices = max_vertices,
+    });
+
+    std.log.info("Vulkan RenderPlugin: initialized", .{});
+}
+
+const SyncObjects = struct {
+    image_available: []vk.Semaphore,
+    render_finished: []vk.Semaphore,
+    in_flight: []vk.Fence,
+};
+
+fn createSyncObjects(allocator: std.mem.Allocator, vkd: anytype, count: u32) !SyncObjects {
+    const image_available = try allocator.alloc(vk.Semaphore, count);
+    errdefer allocator.free(image_available);
+
+    const render_finished = try allocator.alloc(vk.Semaphore, count);
+    errdefer allocator.free(render_finished);
+
+    const in_flight = try allocator.alloc(vk.Fence, count);
+    errdefer allocator.free(in_flight);
+
+    for (image_available) |*s| s.* = try vkd.createSemaphore(&.{}, null);
+    for (render_finished) |*s| s.* = try vkd.createSemaphore(&.{}, null);
+    for (in_flight) |*f| f.* = try vkd.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
+
+    return .{
+        .image_available = image_available,
+        .render_finished = render_finished,
+        .in_flight = in_flight,
+    };
+}
+
+fn destroySyncObjects(vkd: anytype, allocator: std.mem.Allocator, sync: SyncObjects) void {
+    for (sync.in_flight) |f| vkd.destroyFence(f, null);
+    for (sync.image_available) |s| vkd.destroySemaphore(s, null);
+    for (sync.render_finished) |s| vkd.destroySemaphore(s, null);
+    allocator.free(sync.in_flight);
+    allocator.free(sync.image_available);
+    allocator.free(sync.render_finished);
+}
+
+fn createRenderPass(vkd: anytype, format: vk.Format) !vk.RenderPass {
     const color_attachment = vk.AttachmentDescription{
-        .format = swap.surface_format.format,
+        .format = format,
         .samples = .{ .@"1_bit" = true },
         .load_op = .clear,
         .store_op = .store,
@@ -49,59 +154,101 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         .initial_layout = .undefined,
         .final_layout = .present_src_khr,
     };
-    const color_ref = vk.AttachmentReference{ .attachment = 0, .layout = .color_attachment_optimal };
+
+    const color_ref = vk.AttachmentReference{
+        .attachment = 0,
+        .layout = .color_attachment_optimal
+    };
+
     const subpass = vk.SubpassDescription{
         .pipeline_bind_point = .graphics,
         .color_attachment_count = 1,
         .p_color_attachments = @ptrCast(&color_ref),
     };
-    const rp = try vkd.createRenderPass(&.{
+
+    return try vkd.createRenderPass(&.{
         .attachment_count = 1,
         .p_attachments = @ptrCast(&color_attachment),
         .subpass_count = 1,
         .p_subpasses = @ptrCast(&subpass),
     }, null);
+}
 
-    // Create framebuffers for each swapchain view
-    const fbs = try std.heap.page_allocator.alloc(vk.Framebuffer, swap.views.len);
-    errdefer std.heap.page_allocator.free(fbs);
-    for (fbs, 0..) |*fb, i| {
+fn createFramebuffers(allocator: std.mem.Allocator, vkd: anytype, render_pass: vk.RenderPass, swap: *const SwapchainResource) ![]vk.Framebuffer {
+    const framebuffers = try allocator.alloc(vk.Framebuffer, swap.views.len);
+    errdefer allocator.free(framebuffers);
+
+    var i: usize = 0;
+    errdefer for (framebuffers[0..i]) |fb| vkd.destroyFramebuffer(fb, null);
+
+    for (framebuffers, 0..) |*fb, idx| {
         fb.* = try vkd.createFramebuffer(&.{
-            .render_pass = rp,
+            .render_pass = render_pass,
             .attachment_count = 1,
-            .p_attachments = @ptrCast(&swap.views[i]),
+            .p_attachments = @ptrCast(&swap.views[idx]),
             .width = swap.extent.width,
             .height = swap.extent.height,
             .layers = 1,
         }, null);
+        i += 1;
     }
 
-    // Command pool and buffers
-    const pool = try vkd.createCommandPool(&.{ .queue_family_index = dev_res.graphics_family_index.? }, null);
-    const cmdbufs = try std.heap.page_allocator.alloc(vk.CommandBuffer, swap.views.len);
-    errdefer std.heap.page_allocator.free(cmdbufs);
-    try vkd.allocateCommandBuffers(&.{ .command_pool = pool, .level = .primary, .command_buffer_count = @intCast(cmdbufs.len) }, cmdbufs.ptr);
+    return framebuffers;
+}
 
-    // Sync objects per frame/image
-    const image_available = try std.heap.page_allocator.alloc(vk.Semaphore, cmdbufs.len);
-    const render_finished = try std.heap.page_allocator.alloc(vk.Semaphore, cmdbufs.len);
-    const in_flight = try std.heap.page_allocator.alloc(vk.Fence, cmdbufs.len);
-    for (image_available) |*s| s.* = try vkd.createSemaphore(&.{}, null);
-    for (render_finished) |*s| s.* = try vkd.createSemaphore(&.{}, null);
-    for (in_flight) |*f| f.* = try vkd.createFence(&.{ .flags = .{ .signaled_bit = true } }, null);
+fn destroyFramebuffers(vkd: anytype, allocator: std.mem.Allocator, framebuffers: []const vk.Framebuffer) void {
+    for (framebuffers) |fb| vkd.destroyFramebuffer(fb, null);
+    allocator.free(framebuffers);
+}
 
-    // Create pipeline for triangle rendering
-    const pipeline_layout = try vkd.createPipelineLayout(&.{
-        .flags = .{},
-        .set_layout_count = 0,
-        .p_set_layouts = undefined,
-        .push_constant_range_count = 0,
-        .p_push_constant_ranges = undefined,
+fn allocateCommandBuffers(allocator: std.mem.Allocator, vkd: anytype, pool: vk.CommandPool, count: u32) ![]vk.CommandBuffer {
+    const cmdbufs = try allocator.alloc(vk.CommandBuffer, count);
+    errdefer allocator.free(cmdbufs);
+
+    try vkd.allocateCommandBuffers(&.{
+        .command_pool = pool,
+        .level = .primary,
+        .command_buffer_count = count
+    }, cmdbufs.ptr);
+
+    return cmdbufs;
+}
+
+fn freeCommandBuffers(vkd: anytype, pool: vk.CommandPool, allocator: std.mem.Allocator, cmdbufs: []vk.CommandBuffer) void {
+    vkd.freeCommandBuffers(pool, @intCast(cmdbufs.len), cmdbufs.ptr);
+    allocator.free(cmdbufs);
+}
+
+const VertexBufferInfo = struct {
+    buffer: vk.Buffer,
+    memory: vk.DeviceMemory,
+};
+
+fn createVertexBuffer(vkd: anytype, dev_res: *const DeviceResource, max_vertices: u32) !VertexBufferInfo {
+    const buffer_size = @sizeOf(components.Vertex) * max_vertices;
+
+    const buffer = try vkd.createBuffer(&.{
+        .size = buffer_size,
+        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
+        .sharing_mode = .exclusive,
     }, null);
+    errdefer vkd.destroyBuffer(buffer, null);
 
-    const shaders = @import("shaders.zig");
-    const vert_spv = shaders.vert_spv;
-    const frag_spv = shaders.frag_spv;
+    const mem_reqs = vkd.getBufferMemoryRequirements(buffer);
+    const memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .device_local_bit = true });
+    errdefer vkd.freeMemory(memory, null);
+
+    try vkd.bindBufferMemory(buffer, memory, 0);
+
+    return .{ .buffer = buffer, .memory = memory };
+}
+
+fn createGraphicsPipeline(vkd: anytype, layout: vk.PipelineLayout, render_pass: vk.RenderPass, extent: vk.Extent2D) !vk.Pipeline {
+    _ = extent;
+
+    const shaders = @import("shader_imports");
+    const vert_spv = shaders.triangle_vert;
+    const frag_spv = shaders.triangle_frag;
 
     const vert_module = try vkd.createShaderModule(&.{
         .code_size = vert_spv.len,
@@ -116,16 +263,8 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     defer vkd.destroyShaderModule(frag_module, null);
 
     const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-        .{
-            .stage = .{ .vertex_bit = true },
-            .module = vert_module,
-            .p_name = "main",
-        },
-        .{
-            .stage = .{ .fragment_bit = true },
-            .module = frag_module,
-            .p_name = "main",
-        },
+        .{ .stage = .{ .vertex_bit = true }, .module = vert_module, .p_name = "main" },
+        .{ .stage = .{ .fragment_bit = true }, .module = frag_module, .p_name = "main" },
     };
 
     const vertex_binding = vk.VertexInputBindingDescription{
@@ -135,18 +274,8 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     };
 
     const vertex_attributes = [_]vk.VertexInputAttributeDescription{
-        .{
-            .binding = 0,
-            .location = 0,
-            .format = .r32g32_sfloat,
-            .offset = @offsetOf(components.Vertex, "pos"),
-        },
-        .{
-            .binding = 0,
-            .location = 1,
-            .format = .r32g32b32_sfloat,
-            .offset = @offsetOf(components.Vertex, "color"),
-        },
+        .{ .binding = 0, .location = 0, .format = .r32g32_sfloat, .offset = @offsetOf(components.Vertex, "pos") },
+        .{ .binding = 0, .location = 1, .format = .r32g32b32_sfloat, .offset = @offsetOf(components.Vertex, "color") },
     };
 
     const vertex_input = vk.PipelineVertexInputStateCreateInfo{
@@ -163,9 +292,9 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
 
     const viewport_state = vk.PipelineViewportStateCreateInfo{
         .viewport_count = 1,
-        .p_viewports = undefined,
+        .p_viewports = undefined, // Dynamic
         .scissor_count = 1,
-        .p_scissors = undefined,
+        .p_scissors = undefined, // Dynamic
     };
 
     const rasterization = vk.PipelineRasterizationStateCreateInfo{
@@ -228,52 +357,17 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         .p_depth_stencil_state = null,
         .p_color_blend_state = &color_blend,
         .p_dynamic_state = &dynamic_state,
-        .layout = pipeline_layout,
-        .render_pass = rp,
+        .layout = layout,
+        .render_pass = render_pass,
         .subpass = 0,
         .base_pipeline_handle = .null_handle,
         .base_pipeline_index = -1,
     };
 
     var pipeline: vk.Pipeline = undefined;
-    _ = try vkd.createGraphicsPipelines(
-        .null_handle,
-        1,
-        @ptrCast(&pipeline_info),
-        null,
-        @ptrCast(&pipeline),
-    );
+    _ = try vkd.createGraphicsPipelines(.null_handle, 1, @ptrCast(&pipeline_info), null, @ptrCast(&pipeline));
 
-    // Create vertex buffer (we'll allocate for max 1000 triangles = 3000 vertices)
-    const max_vertices: u32 = 3000;
-    const buffer_size = @sizeOf(components.Vertex) * max_vertices;
-    const vertex_buffer = try vkd.createBuffer(&.{
-        .size = buffer_size,
-        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
-        .sharing_mode = .exclusive,
-    }, null);
-
-    const mem_reqs = vkd.getBufferMemoryRequirements(vertex_buffer);
-    const vertex_memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .device_local_bit = true });
-    try vkd.bindBufferMemory(vertex_buffer, vertex_memory, 0);
-
-    try commands.insertResource(RenderResource{
-        .render_pass = rp,
-        .framebuffers = fbs,
-        .cmd_pool = pool,
-        .cmd_buffers = cmdbufs,
-        .image_available = image_available,
-        .render_finished = render_finished,
-        .in_flight = in_flight,
-        .pipeline_layout = pipeline_layout,
-        .pipeline = pipeline,
-        .vertex_buffer = vertex_buffer,
-        .vertex_memory = vertex_memory,
-        .vertex_buffer_size = buffer_size,
-        .max_vertices = max_vertices,
-    });
-
-    std.log.info("Vulkan RenderPlugin: pipeline and resources created", .{});
+    return pipeline;
 }
 
 fn allocateMemory(vkd: anytype, dev_res: *const DeviceResource, requirements: vk.MemoryRequirements, properties: vk.MemoryPropertyFlags) !vk.DeviceMemory {
@@ -283,10 +377,13 @@ fn allocateMemory(vkd: anytype, dev_res: *const DeviceResource, requirements: vk
     while (i < mem_props.memory_type_count) : (i += 1) {
         if ((requirements.memory_type_bits & (@as(u32, 1) << @intCast(i))) != 0) {
             const type_props = mem_props.memory_types[i].property_flags;
-            if ((type_props.host_visible_bit == properties.host_visible_bit or !properties.host_visible_bit) and
-                (type_props.host_coherent_bit == properties.host_coherent_bit or !properties.host_coherent_bit) and
-                (type_props.device_local_bit == properties.device_local_bit or !properties.device_local_bit))
-            {
+
+            // Check if all required properties are present
+            const has_host_visible = type_props.host_visible_bit or !properties.host_visible_bit;
+            const has_host_coherent = type_props.host_coherent_bit or !properties.host_coherent_bit;
+            const has_device_local = type_props.device_local_bit or !properties.device_local_bit;
+
+            if (has_host_visible and has_host_coherent and has_device_local) {
                 return try vkd.allocateMemory(&.{
                     .allocation_size = requirements.size,
                     .memory_type_index = i,
@@ -297,8 +394,18 @@ fn allocateMemory(vkd: anytype, dev_res: *const DeviceResource, requirements: vk
     return error.NoSuitableMemoryType;
 }
 
-fn render_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResource), r_bounds: ResOpt(RenderBounds), r_rend: ResOpt(RenderResource), r_clear: ResOpt(ClearColor), q_triangles: Query(.{components.Triangle})) !void {
+fn render_system(
+    commands: *Commands,
+    r_device: ResOpt(DeviceResource),
+    r_swap: ResOpt(SwapchainResource),
+    r_bounds: ResOpt(RenderBounds),
+    r_rend: ResOpt(RenderResource),
+    r_clear: ResOpt(ClearColor),
+    q_triangles: Query(.{components.Triangle}),
+) !void {
     _ = r_bounds;
+    _ = commands;
+
     const dev_res = r_device.ptr orelse return;
     const vkd = dev_res.device_proxy orelse return;
     const gfx_q = dev_res.graphics_queue.?;
@@ -308,34 +415,76 @@ fn render_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: 
     const clear_color = if (r_clear.ptr) |cc| cc.* else ClearColor{};
 
     // Acquire next image
-    const next_image_sem = rr.image_available[0]; // Simple rotation for now
+    const next_image_sem = rr.image_available[0];
     const acquire = try vkd.acquireNextImageKHR(swap.swapchain.?, std.math.maxInt(u64), next_image_sem, .null_handle);
+
     switch (acquire.result) {
         .success, .suboptimal_khr => {},
         .error_out_of_date_khr => return,
         else => return error.ImageAcquireFailed,
     }
 
-    const img: usize = @intCast(acquire.image_index);
+    const img_idx: usize = @intCast(acquire.image_index);
 
-    // Collect all triangle vertices
-    var vertices = try std.ArrayList(components.Vertex).initCapacity(std.heap.page_allocator, 100);
-    defer vertices.deinit(std.heap.page_allocator);
+    // Collect triangle vertices from ECS
+    var vertices = try std.ArrayList(components.Vertex).initCapacity(rr.allocator, 100);
+    defer vertices.deinit(rr.allocator);
 
     var it = q_triangles.iterator();
     while (it.next()) |entity| {
         if (entity.get(components.Triangle)) |tri| {
-            try vertices.appendSlice(std.heap.page_allocator, &tri.vertices);
+            try vertices.appendSlice(rr.allocator, &tri.vertices);
         }
     }
 
-    // Upload vertices to GPU
+    // Upload vertices to GPU if any exist
     if (vertices.items.len > 0) {
         try uploadVertices(vkd, dev_res, rr.cmd_pool, rr.vertex_buffer, vertices.items);
     }
 
     // Record command buffer
-    const cmdbuf = rr.cmd_buffers[img];
+    try recordCommandBuffer(vkd, rr, swap, img_idx, clear_color, @intCast(vertices.items.len));
+
+    // Submit
+    const wait_stages = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
+    const submit = vk.SubmitInfo{
+        .wait_semaphore_count = 1,
+        .p_wait_semaphores = @ptrCast(&next_image_sem),
+        .p_wait_dst_stage_mask = &wait_stages,
+        .command_buffer_count = 1,
+        .p_command_buffers = @ptrCast(&rr.cmd_buffers[img_idx]),
+        .signal_semaphore_count = 1,
+        .p_signal_semaphores = @ptrCast(&rr.render_finished[img_idx]),
+    };
+    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
+
+    // Present
+    const sc = swap.swapchain.?;
+    var present_img_idx: u32 = acquire.image_index;
+    const present_info = vk.PresentInfoKHR{
+        .wait_semaphore_count = 1,
+        .p_wait_semaphores = @ptrCast(&rr.render_finished[img_idx]),
+        .swapchain_count = 1,
+        .p_swapchains = @ptrCast(&sc),
+        .p_image_indices = @ptrCast(&present_img_idx),
+        .p_results = null,
+    };
+    _ = try vkd.queuePresentKHR(present_q, &present_info);
+
+    // Simple synchronization: wait for queue idle
+    try vkd.queueWaitIdle(present_q);
+}
+
+fn recordCommandBuffer(
+    vkd: anytype,
+    rr: *const RenderResource,
+    swap: *const SwapchainResource,
+    img_idx: usize,
+    clear_color: ClearColor,
+    vertex_count: u32,
+) !void {
+    const cmdbuf = rr.cmd_buffers[img_idx];
+
     try vkd.resetCommandBuffer(cmdbuf, .{});
     try vkd.beginCommandBuffer(cmdbuf, &.{});
 
@@ -347,6 +496,7 @@ fn render_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: 
         .min_depth = 0,
         .max_depth = 1,
     };
+
     const scissor = vk.Rect2D{
         .offset = .{ .x = 0, .y = 0 },
         .extent = swap.extent,
@@ -360,60 +510,24 @@ fn render_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: 
         .color = .{ .float_32 = .{ clear_f32.r, clear_f32.g, clear_f32.b, clear_f32.a } },
     };
 
-    const render_area = vk.Rect2D{
-        .offset = .{ .x = 0, .y = 0 },
-        .extent = swap.extent,
-    };
-
     vkd.cmdBeginRenderPass(cmdbuf, &.{
         .render_pass = rr.render_pass,
-        .framebuffer = rr.framebuffers[img],
-        .render_area = render_area,
+        .framebuffer = rr.framebuffers[img_idx],
+        .render_area = .{ .offset = .{ .x = 0, .y = 0 }, .extent = swap.extent },
         .clear_value_count = 1,
         .p_clear_values = @ptrCast(&clear_value),
     }, .@"inline");
 
     vkd.cmdBindPipeline(cmdbuf, .graphics, rr.pipeline);
 
-    if (vertices.items.len > 0) {
+    if (vertex_count > 0) {
         const offset = [_]vk.DeviceSize{0};
         vkd.cmdBindVertexBuffers(cmdbuf, 0, 1, @ptrCast(&rr.vertex_buffer), &offset);
-        vkd.cmdDraw(cmdbuf, @intCast(vertices.items.len), 1, 0, 0);
+        vkd.cmdDraw(cmdbuf, vertex_count, 1, 0, 0);
     }
 
     vkd.cmdEndRenderPass(cmdbuf);
     try vkd.endCommandBuffer(cmdbuf);
-
-    // Submit
-    const wait_stages = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
-    const submit = vk.SubmitInfo{
-        .wait_semaphore_count = 1,
-        .p_wait_semaphores = @ptrCast(&next_image_sem),
-        .p_wait_dst_stage_mask = &wait_stages,
-        .command_buffer_count = 1,
-        .p_command_buffers = @ptrCast(&cmdbuf),
-        .signal_semaphore_count = 1,
-        .p_signal_semaphores = @ptrCast(&rr.render_finished[img]),
-    };
-    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
-
-    // Present
-    const sc = swap.swapchain.?;
-    var img_idx: u32 = acquire.image_index;
-    const present_info = vk.PresentInfoKHR{
-        .wait_semaphore_count = 1,
-        .p_wait_semaphores = @ptrCast(&rr.render_finished[img]),
-        .swapchain_count = 1,
-        .p_swapchains = @ptrCast(&sc),
-        .p_image_indices = @ptrCast(&img_idx),
-        .p_results = null,
-    };
-    _ = try vkd.queuePresentKHR(present_q, &present_info);
-
-    // Simple synchronization: wait for queue idle
-    try vkd.queueWaitIdle(present_q);
-
-    _ = commands;
 }
 
 fn uploadVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.CommandPool, dst_buffer: vk.Buffer, vertices: []const components.Vertex) !void {
@@ -433,7 +547,7 @@ fn uploadVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.Command
 
     try vkd.bindBufferMemory(staging_buffer, staging_memory, 0);
 
-    // Copy to staging
+    // Copy vertices to staging buffer
     {
         const data = try vkd.mapMemory(staging_memory, 0, vk.WHOLE_SIZE, .{});
         defer vkd.unmapMemory(staging_memory);
@@ -442,7 +556,7 @@ fn uploadVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.Command
         @memcpy(gpu_vertices[0..vertices.len], vertices);
     }
 
-    // Copy from staging to device
+    // Copy from staging to device buffer
     var cmdbuf_handle: vk.CommandBuffer = undefined;
     try vkd.allocateCommandBuffers(&.{
         .command_pool = pool,
@@ -453,11 +567,7 @@ fn uploadVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.Command
 
     try vkd.beginCommandBuffer(cmdbuf_handle, &.{ .flags = .{ .one_time_submit_bit = true } });
 
-    const region = vk.BufferCopy{
-        .src_offset = 0,
-        .dst_offset = 0,
-        .size = size,
-    };
+    const region = vk.BufferCopy{ .src_offset = 0, .dst_offset = 0, .size = size };
     vkd.cmdCopyBuffer(cmdbuf_handle, staging_buffer, dst_buffer, 1, @ptrCast(&region));
 
     try vkd.endCommandBuffer(cmdbuf_handle);
@@ -475,6 +585,7 @@ fn uploadVertices(vkd: anytype, dev_res: *const DeviceResource, pool: vk.Command
 
 fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResource), r_rend: ResOpt(RenderResource)) !void {
     _ = r_swap;
+
     if (r_rend.ptr) |rr| {
         if (r_device.ptr) |dev| {
             if (dev.device_proxy) |vkd| {
@@ -485,21 +596,21 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResou
                 vkd.destroyPipeline(rr.pipeline, null);
                 vkd.destroyPipelineLayout(rr.pipeline_layout, null);
 
-                for (rr.in_flight) |f| vkd.destroyFence(f, null);
-                for (rr.image_available) |s| vkd.destroySemaphore(s, null);
-                for (rr.render_finished) |s| vkd.destroySemaphore(s, null);
-                for (rr.framebuffers) |fb| vkd.destroyFramebuffer(fb, null);
+                destroySyncObjects(vkd, rr.allocator, .{
+                    .in_flight = rr.in_flight,
+                    .image_available = rr.image_available,
+                    .render_finished = rr.render_finished,
+                });
+
+                destroyFramebuffers(vkd, rr.allocator, rr.framebuffers);
                 vkd.destroyRenderPass(rr.render_pass, null);
-                vkd.freeCommandBuffers(rr.cmd_pool, @intCast(rr.cmd_buffers.len), rr.cmd_buffers.ptr);
+                freeCommandBuffers(vkd, rr.cmd_pool, rr.allocator, rr.cmd_buffers);
                 vkd.destroyCommandPool(rr.cmd_pool, null);
             }
         }
-        if (rr.framebuffers.len > 0) std.heap.page_allocator.free(rr.framebuffers);
-        if (rr.cmd_buffers.len > 0) std.heap.page_allocator.free(rr.cmd_buffers);
-        if (rr.image_available.len > 0) std.heap.page_allocator.free(rr.image_available);
-        if (rr.render_finished.len > 0) std.heap.page_allocator.free(rr.render_finished);
-        if (rr.in_flight.len > 0) std.heap.page_allocator.free(rr.in_flight);
     }
+
+    std.log.info("Vulkan RenderPlugin: deinitialized", .{});
 }
 
 // ─────────────────────────────────────────────
