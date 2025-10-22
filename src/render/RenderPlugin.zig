@@ -4,7 +4,6 @@ pub fn build(self: *RenderPlugin, app: *App) !void {
     _ = self;
     // VulkanPlugin creates precise schedules; we only register systems to them.
     try app.addSystem("VkRenderInit", init_system);
-    try app.addSystem("VkRenderUpdate", handle_resize_system);
     try app.addSystem("VkRender", render_system);
     try app.addSystem("VkRenderDeinit", deinit_system);
 }
@@ -170,40 +169,6 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     });
 
     std.log.info("Vulkan RenderPlugin: initialized", .{});
-}
-
-fn handle_resize_system(
-    commands: *Commands,
-    r_device: ResOpt(DeviceResource),
-    r_swap: ResOpt(SwapchainResource),
-    r_render: ResOpt(RenderResource),
-    event_reader: EventReader(phasor_common.WindowResized),
-) !void {
-    // Check if there's a resize event
-    const resize_event = event_reader.tryRecv() orelse return;
-
-    std.log.info("Vulkan RenderPlugin: handling window resize to {d}x{d}", .{ resize_event.width, resize_event.height });
-
-    const dev_res = r_device.ptr orelse return;
-    const vkd = dev_res.device_proxy orelse return;
-    const swap = r_swap.ptr orelse return;
-    const rr = r_render.ptr orelse return;
-
-    // Wait for device to be idle before recreating framebuffers
-    try vkd.deviceWaitIdle();
-
-    // Destroy old framebuffers
-    destroyFramebuffers(vkd, rr.allocator, rr.framebuffers);
-
-    // Recreate framebuffers with new swapchain dimensions
-    const new_framebuffers = try createFramebuffers(rr.allocator, vkd, rr.render_pass, swap);
-
-    // Update render resource with new framebuffers
-    var updated_resource = rr.*;
-    updated_resource.framebuffers = new_framebuffers;
-    try commands.insertResource(updated_resource);
-
-    std.log.info("Vulkan RenderPlugin: framebuffers recreated", .{});
 }
 
 const SyncObjects = struct {
@@ -493,7 +458,7 @@ fn createSpritePipeline(vkd: anytype, layout: vk.PipelineLayout, render_pass: vk
     };
 
     const vertex_attributes = [_]vk.VertexInputAttributeDescription{
-        .{ .binding = 0, .location = 0, .format = .r32g32_sfloat, .offset = @offsetOf(components.SpriteVertex, "pos") },
+        .{ .binding = 0, .location = 0, .format = .r32g32b32_sfloat, .offset = @offsetOf(components.SpriteVertex, "pos") },
         .{ .binding = 0, .location = 1, .format = .r32g32_sfloat, .offset = @offsetOf(components.SpriteVertex, "uv") },
         .{ .binding = 0, .location = 2, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(components.SpriteVertex, "color") },
     };
@@ -638,13 +603,13 @@ fn render_system(
     commands: *Commands,
     r_device: ResOpt(DeviceResource),
     r_swap: ResOpt(SwapchainResource),
-    r_window_bounds: ResOpt(phasor_common.WindowBounds),
+    r_bounds: ResOpt(RenderBounds),
     r_rend: ResOpt(RenderResource),
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
-    q_sprites: Query(.{ components.Sprite3D, Transform3d }),
-    q_cameras: Query(.{components.Camera3d}),
+    q_sprites: Query(.{components.Sprite3D}),
 ) !void {
+    _ = r_bounds;
     _ = commands;
 
     const dev_res = r_device.ptr orelse return;
@@ -654,15 +619,6 @@ fn render_system(
     const swap = r_swap.ptr orelse return;
     const rr = r_rend.ptr orelse return;
     const clear_color = if (r_clear.ptr) |cc| cc.* else ClearColor{};
-
-    // Find active camera to determine coordinate system
-    var camera_mode: ?components.Camera3d = null;
-    var cam_it = q_cameras.iterator();
-    if (cam_it.next()) |cam_entity| {
-        if (cam_entity.get(components.Camera3d)) |cam| {
-            camera_mode = cam.*;
-        }
-    }
 
     // Acquire next image
     const next_image_sem = rr.image_available[0];
@@ -696,97 +652,26 @@ fn render_system(
     var sprite_vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 100);
     defer sprite_vertices.deinit(rr.allocator);
 
-    // Get window bounds (logical pixels - same on both displays)
-    const window_bounds = r_window_bounds.ptr orelse return;
-    const window_width: f32 = @floatFromInt(window_bounds.width);
-    const window_height: f32 = @floatFromInt(window_bounds.height);
-
     var sprite_it = q_sprites.iterator();
     while (sprite_it.next()) |entity| {
-        if (entity.get(components.Sprite3D)) |sprite| {
-            // Determine sprite size based on size_mode
-            var sprite_width: f32 = 1.0;
-            var sprite_height: f32 = 1.0;
-
-            // Sprite dimensions in window coordinates (logical pixels)
-            switch (sprite.size_mode) {
-                .Auto => {
-                    // Auto: use texture pixel dimensions directly as window coordinates
-                    sprite_width = @floatFromInt(sprite.texture.width);
-                    sprite_height = @floatFromInt(sprite.texture.height);
-                },
-                .Manual => |manual| {
-                    // Manual: dimensions specified in window coordinates
-                    sprite_width = manual.width;
-                    sprite_height = manual.height;
-                },
-            }
+        if (entity.get(components.Sprite3D)) |_| {
+            // Generate quad (2 triangles = 6 vertices)
+            const half_w: f32 = 0.5;
+            const half_h: f32 = 0.5;
 
             // Get transform if available, otherwise use identity
-            const transform = entity.get(Transform3d) orelse &Transform3d{};
-            const pos = transform.translation;
-            const scale = transform.scale;
+            const pos = if (entity.get(Transform3d)) |xf| xf.translation else phasor_common.Vec3{};
+            const color = components.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }; // White tint
 
-            // Apply transform scale to sprite size (in window coordinates)
-            const half_w = (sprite_width * scale[0]) / 2.0;
-            const half_h = (sprite_height * scale[1]) / 2.0;
-
-            const color: [4]f32 = .{ 1.0, 1.0, 1.0, 1.0 }; // White tint
-
-            // Transform to clip space based on camera mode
-            var clip_x: f32 = pos[0];
-            var clip_y: f32 = pos[1];
-            var clip_half_w: f32 = half_w;
-            var clip_half_h: f32 = half_h;
-
-            if (camera_mode) |cam| {
-                switch (cam) {
-                    .Viewport => |vp| {
-                        // Transform from window coordinates to clip space [-1, 1]
-                        // Window coordinates are DPI-independent logical pixels
-                        switch (vp.mode) {
-                            .Center => {
-                                // Center mode: (0,0) is center, y increases upwards
-                                clip_x = pos[0] / (window_width / 2.0);
-                                clip_y = pos[1] / (window_height / 2.0);
-                                clip_half_w = half_w / (window_width / 2.0);
-                                clip_half_h = half_h / (window_height / 2.0);
-                            },
-                            .TopLeft => {
-                                // TopLeft mode: (0,0) is top-left, y increases downwards
-                                clip_x = 2.0 * pos[0] / window_width - 1.0;
-                                clip_y = 1.0 - 2.0 * pos[1] / window_height;
-                                clip_half_w = half_w / (window_width / 2.0);
-                                clip_half_h = half_h / (window_height / 2.0);
-                            },
-                        }
-                    },
-                    .Orthographic => |ortho| {
-                        // Transform using orthographic bounds
-                        const width = ortho.right - ortho.left;
-                        const height = ortho.top - ortho.bottom;
-                        clip_x = (pos[0] - ortho.left) / (width / 2.0) - 1.0;
-                        clip_y = (pos[1] - ortho.bottom) / (height / 2.0) - 1.0;
-                        clip_half_w = half_w / (width / 2.0);
-                        clip_half_h = half_h / (height / 2.0);
-                    },
-                    .Perspective => {
-                        // Perspective projection not implemented for sprites yet
-                        // Use identity transform
-                    },
-                }
-            }
-
-            // Generate quad (2 triangles = 6 vertices) in clip space
             // Triangle 1
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x - clip_half_w, clip_y - clip_half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x + clip_half_w, clip_y - clip_half_h }, .uv = .{ 1.0, 0.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x + clip_half_w, clip_y + clip_half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x - half_w, .y = pos.y - half_h, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x + half_w, .y = pos.y - half_h, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x + half_w, .y = pos.y + half_h, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
 
             // Triangle 2
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x + clip_half_w, clip_y + clip_half_h }, .uv = .{ 1.0, 1.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x - clip_half_w, clip_y + clip_half_h }, .uv = .{ 0.0, 1.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ clip_x - clip_half_w, clip_y - clip_half_h }, .uv = .{ 0.0, 0.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x + half_w, .y = pos.y + half_h, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x - half_w, .y = pos.y + half_h, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
+            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x - half_w, .y = pos.y - half_h, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
         }
     }
 
@@ -1108,9 +993,9 @@ const App = phasor_ecs.App;
 const Commands = phasor_ecs.Commands;
 const ResOpt = phasor_ecs.ResOpt;
 const Query = phasor_ecs.Query;
-const EventReader = phasor_ecs.EventReader;
 
 const phasor_common = @import("phasor-common");
+const RenderBounds = phasor_common.RenderBounds;
 const ClearColor = phasor_common.ClearColor;
 
 const components = @import("../components.zig");

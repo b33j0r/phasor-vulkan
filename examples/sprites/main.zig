@@ -8,6 +8,9 @@ const GameAssets = struct {
     planet_texture: phasor_vulkan.Texture = .{
         .path = "examples/sprites/assets/planet05.png",
     },
+    ship_texture: phasor_vulkan.Texture = .{
+        .path = "examples/sprites/assets/playerShip1_orange.png",
+    },
 };
 
 fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(GameAssets)) !void {
@@ -20,15 +23,27 @@ fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(Gam
         },
     });
 
-    // Create a sprite entity with the loaded texture (following raylib pattern)
-    // Using Auto size mode for pixel-perfect sizing
+    // Create a sprite entity with the planet texture
     _ = try mut_commands.createEntity(.{
         phasor_vulkan.Transform3d{
-            .translation = .{ 0.0, 0.0, 0.0 },
-            .scale = .{ 0.5, 0.5, 0.5 },
+            .translation = .{ .x = 0.0, .y = 0.0, .z = -1.0 },
+            .scale = .{ .x = 0.5, .y = 0.5, .z = 0.5 },
         },
         phasor_vulkan.Sprite3D{
             .texture = &r_assets.ptr.planet_texture,
+            .size_mode = .Auto, // Sprite will be sized to match texture dimensions
+        },
+    });
+
+    // Create another sprite entity for the ship texture
+    // Positioned above the planet
+    _ = try mut_commands.createEntity(.{
+        phasor_vulkan.Transform3d{
+            .translation = .{ .x = -240.0, .y = 0.0, .z = 0.0 },
+            .scale = .{ .x = 0.7, .y = 0.7, .z = 0.7 },
+        },
+        phasor_vulkan.Sprite3D{
+            .texture = &r_assets.ptr.ship_texture,
             .size_mode = .Auto, // Sprite will be sized to match texture dimensions
         },
     });

@@ -6,6 +6,9 @@ pub const SwapchainResource = struct {
     extent: vk.Extent2D = .{ .width = 0, .height = 0 },
     images: []vk.Image = &[_]vk.Image{},
     views: []vk.ImageView = &[_]vk.ImageView{},
+    depth_image: ?vk.Image = null,
+    depth_image_view: ?vk.ImageView = null,
+    depth_image_memory: ?vk.DeviceMemory = null,
 };
 
 pub fn build(self: *SwapchainPlugin, app: *App) !void {
@@ -105,12 +108,54 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_devi
         }, null);
     }
 
+    // Create depth image
+    const depth_format = vk.Format.d32_sfloat;
+    const depth_image = try device.createImage(&.{
+        .image_type = .@"2d",
+        .format = depth_format,
+        .extent = .{ .width = extent.width, .height = extent.height, .depth = 1 },
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = .optimal,
+        .usage = .{ .depth_stencil_attachment_bit = true },
+        .sharing_mode = .exclusive,
+        .initial_layout = .undefined,
+    }, null);
+    errdefer device.destroyImage(depth_image, null);
+
+    // Allocate memory for depth image
+    const depth_mem_reqs = device.getImageMemoryRequirements(depth_image);
+    const depth_memory = try allocateMemory(device, dev, depth_mem_reqs, .{ .device_local_bit = true });
+    errdefer device.freeMemory(depth_memory, null);
+
+    try device.bindImageMemory(depth_image, depth_memory, 0);
+
+    // Create depth image view
+    const depth_image_view = try device.createImageView(&.{
+        .image = depth_image,
+        .view_type = .@"2d",
+        .format = depth_format,
+        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        .subresource_range = .{
+            .aspect_mask = .{ .depth_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    }, null);
+    errdefer device.destroyImageView(depth_image_view, null);
+
     const res: SwapchainResource = .{
         .swapchain = swapchain,
         .surface_format = chosen_format,
         .extent = extent,
         .images = images,
         .views = views,
+        .depth_image = depth_image,
+        .depth_image_view = depth_image_view,
+        .depth_image_memory = depth_memory,
     };
 
     try commands.insertResource(res);
@@ -208,6 +253,48 @@ fn handle_resize_system(
         }, null);
     }
 
+    // Destroy old depth resources
+    if (old_sc.depth_image_view) |dv| device.destroyImageView(dv, null);
+    if (old_sc.depth_image) |di| device.destroyImage(di, null);
+    if (old_sc.depth_image_memory) |dm| device.freeMemory(dm, null);
+
+    // Create new depth image
+    const depth_format = vk.Format.d32_sfloat;
+    const depth_image = try device.createImage(&.{
+        .image_type = .@"2d",
+        .format = depth_format,
+        .extent = .{ .width = extent.width, .height = extent.height, .depth = 1 },
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = .optimal,
+        .usage = .{ .depth_stencil_attachment_bit = true },
+        .sharing_mode = .exclusive,
+        .initial_layout = .undefined,
+    }, null);
+    errdefer device.destroyImage(depth_image, null);
+
+    const depth_mem_reqs = device.getImageMemoryRequirements(depth_image);
+    const depth_memory = try allocateMemory(device, dev, depth_mem_reqs, .{ .device_local_bit = true });
+    errdefer device.freeMemory(depth_memory, null);
+
+    try device.bindImageMemory(depth_image, depth_memory, 0);
+
+    const depth_image_view = try device.createImageView(&.{
+        .image = depth_image,
+        .view_type = .@"2d",
+        .format = depth_format,
+        .components = .{ .r = .identity, .g = .identity, .b = .identity, .a = .identity },
+        .subresource_range = .{
+            .aspect_mask = .{ .depth_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    }, null);
+    errdefer device.destroyImageView(depth_image_view, null);
+
     // Update resource with new swapchain data
     try commands.insertResource(SwapchainResource{
         .swapchain = new_swapchain,
@@ -215,6 +302,9 @@ fn handle_resize_system(
         .extent = extent,
         .images = images,
         .views = views,
+        .depth_image = depth_image,
+        .depth_image_view = depth_image_view,
+        .depth_image_memory = depth_memory,
     });
 
     std.log.info("Vulkan SwapchainPlugin: swapchain recreated ({d} images)", .{views.len});
@@ -225,6 +315,9 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_sc: ResOpt(SwapchainResourc
         if (r_device.ptr) |dev| {
             if (dev.device_proxy) |device| {
                 for (sc.views) |v| device.destroyImageView(v, null);
+                if (sc.depth_image_view) |dv| device.destroyImageView(dv, null);
+                if (sc.depth_image) |di| device.destroyImage(di, null);
+                if (sc.depth_image_memory) |dm| device.freeMemory(dm, null);
                 if (sc.swapchain) |sc_handle| device.destroySwapchainKHR(sc_handle, null);
             }
         }
@@ -233,6 +326,30 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_sc: ResOpt(SwapchainResourc
         if (sc.images.len > 0) std.heap.page_allocator.free(sc.images);
     }
     std.log.info("Vulkan SwapchainPlugin: deinitialized", .{});
+}
+
+fn allocateMemory(vkd: anytype, dev_res: *const DeviceResource, requirements: vk.MemoryRequirements, properties: vk.MemoryPropertyFlags) !vk.DeviceMemory {
+    const mem_props = dev_res.memory_properties;
+
+    var i: u32 = 0;
+    while (i < mem_props.memory_type_count) : (i += 1) {
+        if ((requirements.memory_type_bits & (@as(u32, 1) << @intCast(i))) != 0) {
+            const type_props = mem_props.memory_types[i].property_flags;
+
+            // Check if all required properties are present
+            const has_host_visible = type_props.host_visible_bit or !properties.host_visible_bit;
+            const has_host_coherent = type_props.host_coherent_bit or !properties.host_coherent_bit;
+            const has_device_local = type_props.device_local_bit or !properties.device_local_bit;
+
+            if (has_host_visible and has_host_coherent and has_device_local) {
+                return try vkd.allocateMemory(&.{
+                    .allocation_size = requirements.size,
+                    .memory_type_index = i,
+                }, null);
+            }
+        }
+    }
+    return error.NoSuitableMemoryType;
 }
 
 // ─────────────────────────────────────────────

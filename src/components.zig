@@ -97,23 +97,32 @@ pub const Sprite3D = struct {
 
 pub const Renderable = struct {};
 
+/// Color with 4 components (RGBA)
+pub const Color4 = extern struct {
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+};
+
 /// Vertex data for sprite rendering
-pub const SpriteVertex = struct {
-    /// Position in 2D clip space [-1, 1]
-    pos: [2]f32,
+pub const SpriteVertex = extern struct {
+    /// Position in clip space [-1, 1] with depth
+    pos: phasor_common.Vec3,
     /// Texture coordinates [0, 1]
-    uv: [2]f32,
+    uv: phasor_common.Vec2,
     /// RGBA color/tint
-    color: [4]f32,
+    color: Color4,
 };
 
 /// 3D Transform component (simplified for now)
 /// Translation is in window coordinates for Viewport camera
 pub const Transform3d = struct {
-    translation: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    rotation: [3]f32 = .{ 0.0, 0.0, 0.0 },
-    scale: [3]f32 = .{ 1.0, 1.0, 1.0 },
+    translation: phasor_common.Vec3 = .{},
+    rotation: phasor_common.Vec3 = .{},
+    scale: phasor_common.Vec3 = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
 };
 
 const std = @import("std");
 const assets = @import("assets.zig");
+const phasor_common = @import("phasor-common");
