@@ -817,6 +817,10 @@ fn render_system(
                 batch = &sprite_batches.items[sprite_batches.items.len - 1];
             }
 
+            // Apply camera offset (subtract camera position from sprite position for camera follow)
+            const camera_relative_x = pos.x - camera_offset.x;
+            const camera_relative_y = pos.y - camera_offset.y;
+
             // Transform rotated window-space corners to clip space
             // Helper to transform window coords to clip coords
             const toClip = struct {
@@ -828,10 +832,10 @@ fn render_system(
                 }
             }.f;
 
-            const p1_clip = toClip(p1_window.x, p1_window.y, pos.x, pos.y, window_width, window_height);
-            const p2_clip = toClip(p2_window.x, p2_window.y, pos.x, pos.y, window_width, window_height);
-            const p3_clip = toClip(p3_window.x, p3_window.y, pos.x, pos.y, window_width, window_height);
-            const p4_clip = toClip(p4_window.x, p4_window.y, pos.x, pos.y, window_width, window_height);
+            const p1_clip = toClip(p1_window.x, p1_window.y, camera_relative_x, camera_relative_y, window_width, window_height);
+            const p2_clip = toClip(p2_window.x, p2_window.y, camera_relative_x, camera_relative_y, window_width, window_height);
+            const p3_clip = toClip(p3_window.x, p3_window.y, camera_relative_x, camera_relative_y, window_width, window_height);
+            const p4_clip = toClip(p4_window.x, p4_window.y, camera_relative_x, camera_relative_y, window_width, window_height);
 
             // Triangle 1
             try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p1_clip.x, .y = p1_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
