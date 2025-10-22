@@ -1,3 +1,32 @@
+// ─────────────────────────────────────────────
+// Render Plugin
+// ─────────────────────────────────────────────
+// This plugin implements the Vulkan rendering pipeline for both triangles
+// and textured sprites with depth testing and batching optimizations.
+//
+// Key Features:
+// - Z-buffer depth testing for proper sprite layering
+// - Per-texture sprite batching to minimize GPU state changes
+// - Camera-based coordinate transformations (Viewport, Orthographic, Perspective)
+// - Window coordinate system (DPI-independent logical pixels)
+// - Efficient vertex buffer management with single upload per frame
+//
+// Rendering Flow:
+// 1. Acquire swapchain image
+// 2. Query ECS for renderable entities (triangles, sprites, cameras)
+// 3. Batch sprites by texture
+// 4. Transform sprite positions from window coordinates to clip space
+// 5. Generate quad vertices (6 per sprite) with depth values
+// 6. Combine all batch vertices and upload to GPU once
+// 7. Record command buffer with separate draw calls per texture
+// 8. Submit and present
+//
+// Critical Implementation Details:
+// - Vertex format MUST match shader layout exactly (Vec3 pos, Vec2 uv, Color4)
+// - Depth testing requires proper depth stencil state configuration
+// - Vertices must be uploaded ONCE before draw loop to avoid overwriting
+// - Each batch uses vertex offset (firstVertex parameter) to reference buffer
+
 const RenderPlugin = @This();
 
 pub fn build(self: *RenderPlugin, app: *App) !void {
@@ -523,6 +552,34 @@ fn createSpritePipeline(vkd: anytype, layout: vk.PipelineLayout, render_pass: vk
         .blend_constants = [_]f32{ 0, 0, 0, 0 },
     };
 
+    const depth_stencil = vk.PipelineDepthStencilStateCreateInfo{
+        .depth_test_enable = .true,
+        .depth_write_enable = .true,
+        .depth_compare_op = .less,
+        .depth_bounds_test_enable = .false,
+        .stencil_test_enable = .false,
+        .front = .{
+            .fail_op = .keep,
+            .pass_op = .keep,
+            .depth_fail_op = .keep,
+            .compare_op = .always,
+            .compare_mask = 0,
+            .write_mask = 0,
+            .reference = 0,
+        },
+        .back = .{
+            .fail_op = .keep,
+            .pass_op = .keep,
+            .depth_fail_op = .keep,
+            .compare_op = .always,
+            .compare_mask = 0,
+            .write_mask = 0,
+            .reference = 0,
+        },
+        .min_depth_bounds = 0.0,
+        .max_depth_bounds = 1.0,
+    };
+
     const dynamic_states = [_]vk.DynamicState{ .viewport, .scissor };
     const dynamic_state = vk.PipelineDynamicStateCreateInfo{
         .flags = .{},
@@ -540,7 +597,7 @@ fn createSpritePipeline(vkd: anytype, layout: vk.PipelineLayout, render_pass: vk
         .p_viewport_state = &viewport_state,
         .p_rasterization_state = &rasterization,
         .p_multisample_state = &multisample,
-        .p_depth_stencil_state = null,
+        .p_depth_stencil_state = &depth_stencil,
         .p_color_blend_state = &color_blend,
         .p_dynamic_state = &dynamic_state,
         .layout = layout,
@@ -603,13 +660,13 @@ fn render_system(
     commands: *Commands,
     r_device: ResOpt(DeviceResource),
     r_swap: ResOpt(SwapchainResource),
-    r_bounds: ResOpt(RenderBounds),
+    r_window_bounds: ResOpt(phasor_common.WindowBounds),
     r_rend: ResOpt(RenderResource),
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
-    q_sprites: Query(.{components.Sprite3D}),
+    q_sprites: Query(.{ components.Sprite3D, Transform3d }),
+    q_cameras: Query(.{components.Camera3d}),
 ) !void {
-    _ = r_bounds;
     _ = commands;
 
     const dev_res = r_device.ptr orelse return;
@@ -619,6 +676,20 @@ fn render_system(
     const swap = r_swap.ptr orelse return;
     const rr = r_rend.ptr orelse return;
     const clear_color = if (r_clear.ptr) |cc| cc.* else ClearColor{};
+
+    // Get window bounds for coordinate transformation
+    const window_bounds = r_window_bounds.ptr orelse return;
+    const window_width: f32 = @floatFromInt(window_bounds.width);
+    const window_height: f32 = @floatFromInt(window_bounds.height);
+
+    // Find camera (if any) for projection
+    var camera_mode: ?components.Camera3d = null;
+    var cam_it = q_cameras.iterator();
+    if (cam_it.next()) |cam_entity| {
+        if (cam_entity.get(components.Camera3d)) |cam| {
+            camera_mode = cam.*;
+        }
+    }
 
     // Acquire next image
     const next_image_sem = rr.image_available[0];
@@ -648,64 +719,160 @@ fn render_system(
         try uploadVertices(vkd, dev_res, rr.cmd_pool, rr.vertex_buffer, vertices.items);
     }
 
-    // Collect sprite vertices from ECS
-    var sprite_vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 100);
-    defer sprite_vertices.deinit(rr.allocator);
+    // Sprite Batching System:
+    // Group sprites by texture to minimize GPU state changes and draw calls.
+    // Each batch contains all vertices for sprites sharing the same texture.
+    // This reduces descriptor set bindings and improves rendering performance.
+    const SpriteBatch = struct {
+        texture: *const assets.Texture,
+        vertices: std.ArrayList(components.SpriteVertex),
+    };
+
+    var sprite_batches = try std.ArrayList(SpriteBatch).initCapacity(rr.allocator, 10);
+    defer {
+        for (sprite_batches.items) |*batch| {
+            batch.vertices.deinit(rr.allocator);
+        }
+        sprite_batches.deinit(rr.allocator);
+    }
 
     var sprite_it = q_sprites.iterator();
     while (sprite_it.next()) |entity| {
-        if (entity.get(components.Sprite3D)) |_| {
-            // Generate quad (2 triangles = 6 vertices)
-            const half_w: f32 = 0.5;
-            const half_h: f32 = 0.5;
+        if (entity.get(components.Sprite3D)) |sprite| {
+            // Determine sprite size based on size_mode
+            var sprite_width: f32 = 1.0;
+            var sprite_height: f32 = 1.0;
 
-            // Get transform if available, otherwise use identity
-            const pos = if (entity.get(Transform3d)) |xf| xf.translation else phasor_common.Vec3{};
+            // Sprite dimensions in window coordinates (logical pixels)
+            switch (sprite.size_mode) {
+                .Auto => {
+                    // Auto: use texture pixel dimensions directly as window coordinates
+                    sprite_width = @floatFromInt(sprite.texture.width);
+                    sprite_height = @floatFromInt(sprite.texture.height);
+                },
+                .Manual => |manual| {
+                    // Manual: dimensions specified in window coordinates
+                    sprite_width = manual.width;
+                    sprite_height = manual.height;
+                },
+            }
+
+            // Get transform (required by query, so must exist)
+            const transform = entity.get(Transform3d).?;
+            const pos = transform.translation;
+            const scale = transform.scale;
+
+            // Apply transform scale to sprite size (in window coordinates)
+            const half_w = (sprite_width * scale.x) / 2.0;
+            const half_h = (sprite_height * scale.y) / 2.0;
+
             const color = components.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }; // White tint
 
-            // Triangle 1
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x - half_w, .y = pos.y - half_h, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x + half_w, .y = pos.y - half_h, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x + half_w, .y = pos.y + half_h, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
+            // Transform to clip space based on camera mode
+            var clip_x: f32 = pos.x;
+            var clip_y: f32 = pos.y;
+            var clip_half_w: f32 = half_w;
+            var clip_half_h: f32 = half_h;
 
-            // Triangle 2
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x + half_w, .y = pos.y + half_h, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x - half_w, .y = pos.y + half_h, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
-            try sprite_vertices.append(rr.allocator, .{ .pos = .{ .x = pos.x - half_w, .y = pos.y - half_h, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
-        }
-    }
+            if (camera_mode) |cam| {
+                switch (cam) {
+                    .Viewport => |vp| {
+                        // Transform from window coordinates to clip space [-1, 1]
+                        // Window coordinates are DPI-independent logical pixels
+                        switch (vp.mode) {
+                            .Center => {
+                                // Center mode: (0,0) is center, y increases upwards
+                                clip_x = pos.x / (window_width / 2.0);
+                                clip_y = pos.y / (window_height / 2.0);
+                                clip_half_w = half_w / (window_width / 2.0);
+                                clip_half_h = half_h / (window_height / 2.0);
+                            },
+                            .TopLeft => {
+                                // TopLeft mode: (0,0) is top-left, y increases downwards
+                                clip_x = 2.0 * pos.x / window_width - 1.0;
+                                clip_y = 1.0 - 2.0 * pos.y / window_height;
+                                clip_half_w = half_w / (window_width / 2.0);
+                                clip_half_h = half_h / (window_height / 2.0);
+                            },
+                        }
+                    },
+                    .Orthographic => |ortho| {
+                        // Transform using orthographic bounds
+                        const width = ortho.right - ortho.left;
+                        const height = ortho.top - ortho.bottom;
+                        clip_x = (pos.x - ortho.left) / (width / 2.0) - 1.0;
+                        clip_y = (pos.y - ortho.bottom) / (height / 2.0) - 1.0;
+                        clip_half_w = half_w / (width / 2.0);
+                        clip_half_h = half_h / (height / 2.0);
+                    },
+                    .Perspective => {
+                        // Perspective projection not implemented for sprites yet
+                        // Use identity transform
+                    },
+                }
+            }
 
-    // Upload sprite vertices to GPU if any exist
-    if (sprite_vertices.items.len > 0) {
-        try uploadSpriteVertices(vkd, dev_res, rr.cmd_pool, rr.sprite_vertex_buffer, sprite_vertices.items);
-    }
+            // Z-Buffer Depth Mapping:
+            // Map sprite z-coordinate to normalized depth [0, 1] for depth testing.
+            // Lower depth values are closer to camera (rendered on top).
+            // z=0 → depth=0.5 (near), z=-1 → depth=1.0 (far), z=1 → depth=0.0 (very near)
+            const depth = std.math.clamp(0.5 - pos.z * 0.5, 0.0, 1.0);
 
-    // Collect all unique textures from sprites for descriptor set creation
-    var texture_descriptors = try std.ArrayList(*const assets.Texture).initCapacity(rr.allocator, 10);
-    defer texture_descriptors.deinit(rr.allocator);
-
-    var tex_sprite_it = q_sprites.iterator();
-    while (tex_sprite_it.next()) |entity| {
-        if (entity.get(components.Sprite3D)) |sprite| {
-            // For simplicity, assume one texture for now
-            var found = false;
-            for (texture_descriptors.items) |tex| {
-                if (tex == sprite.texture) {
-                    found = true;
+            // Find or create batch for this sprite's texture
+            var batch: ?*SpriteBatch = null;
+            for (sprite_batches.items) |*b| {
+                if (b.texture == sprite.texture) {
+                    batch = b;
                     break;
                 }
             }
-            if (!found) {
-                try texture_descriptors.append(rr.allocator, sprite.texture);
+            if (batch == null) {
+                const new_batch = SpriteBatch{
+                    .texture = sprite.texture,
+                    .vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 6),
+                };
+                try sprite_batches.append(rr.allocator, new_batch);
+                batch = &sprite_batches.items[sprite_batches.items.len - 1];
             }
+
+            // Generate quad (2 triangles = 6 vertices) in clip space with depth
+            // Triangle 1
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x - clip_half_w, .y = clip_y - clip_half_h, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x + clip_half_w, .y = clip_y - clip_half_h, .z = depth }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x + clip_half_w, .y = clip_y + clip_half_h, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
+
+            // Triangle 2
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x + clip_half_w, .y = clip_y + clip_half_h, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x - clip_half_w, .y = clip_y + clip_half_h, .z = depth }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x - clip_half_w, .y = clip_y - clip_half_h, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
         }
+    }
+
+    // Vertex Buffer Management:
+    // Combine all batch vertices into a single buffer to minimize uploads.
+    // We track the offset for each batch so draw calls can reference their
+    // portion of the buffer using the firstVertex parameter.
+    var all_sprite_vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, 100);
+    defer all_sprite_vertices.deinit(rr.allocator);
+
+    var batch_offsets = try std.ArrayList(u32).initCapacity(rr.allocator, sprite_batches.items.len);
+    defer batch_offsets.deinit(rr.allocator);
+
+    for (sprite_batches.items) |batch| {
+        try batch_offsets.append(rr.allocator, @intCast(all_sprite_vertices.items.len));
+        try all_sprite_vertices.appendSlice(rr.allocator, batch.vertices.items);
+    }
+
+    // Single upload for all sprite vertices (instead of per-batch uploads)
+    if (all_sprite_vertices.items.len > 0) {
+        try uploadSpriteVertices(vkd, dev_res, rr.cmd_pool, rr.sprite_vertex_buffer, all_sprite_vertices.items);
     }
 
     // Reset descriptor pool for this frame
     try vkd.resetDescriptorPool(rr.sprite_descriptor_pool, .{});
 
     // Record command buffer
-    try recordCommandBuffer(vkd, rr, swap, img_idx, clear_color, @intCast(vertices.items.len), @intCast(sprite_vertices.items.len), texture_descriptors.items);
+    try recordCommandBuffer(vkd, dev_res, rr, swap, img_idx, clear_color, @intCast(vertices.items.len), sprite_batches.items, batch_offsets.items);
 
     // Submit
     const wait_stages = [_]vk.PipelineStageFlags{.{ .color_attachment_output_bit = true }};
@@ -739,14 +906,16 @@ fn render_system(
 
 fn recordCommandBuffer(
     vkd: anytype,
+    dev_res: *const DeviceResource,
     rr: *const RenderResource,
     swap: *const SwapchainResource,
     img_idx: usize,
     clear_color: ClearColor,
     vertex_count: u32,
-    sprite_vertex_count: u32,
-    textures: []const *const assets.Texture,
+    sprite_batches: anytype,
+    batch_offsets: []const u32,
 ) !void {
+    _ = dev_res;
     const cmdbuf = rr.cmd_buffers[img_idx];
 
     try vkd.resetCommandBuffer(cmdbuf, .{});
@@ -790,48 +959,58 @@ fn recordCommandBuffer(
         vkd.cmdDraw(cmdbuf, vertex_count, 1, 0, 0);
     }
 
-    // Draw sprites
-    if (sprite_vertex_count > 0 and textures.len > 0) {
+    // Render Sprites with Batching:
+    // Issue one draw call per texture, using vertex offsets to reference
+    // the correct portion of the vertex buffer for each batch.
+    if (sprite_batches.len > 0) {
         vkd.cmdBindPipeline(cmdbuf, .graphics, rr.sprite_pipeline);
 
-        // For simplicity, use the first texture for all sprites for now
-        const texture = textures[0];
-        if (texture.image_view) |view| {
-            if (texture.sampler) |sampler| {
-                // Create a descriptor set for this texture
-                var descriptor_set: vk.DescriptorSet = undefined;
-                try vkd.allocateDescriptorSets(&.{
-                    .descriptor_pool = rr.sprite_descriptor_pool,
-                    .descriptor_set_count = 1,
-                    .p_set_layouts = @ptrCast(&rr.sprite_descriptor_set_layout),
-                }, @ptrCast(&descriptor_set));
+        // Bind the vertex buffer once for all sprite batches
+        const sprite_buffer_offset = [_]vk.DeviceSize{0};
+        vkd.cmdBindVertexBuffers(cmdbuf, 0, 1, @ptrCast(&rr.sprite_vertex_buffer), &sprite_buffer_offset);
 
-                // Update descriptor set
-                const image_info = vk.DescriptorImageInfo{
-                    .sampler = sampler,
-                    .image_view = view,
-                    .image_layout = .shader_read_only_optimal,
-                };
+        for (sprite_batches, 0..) |batch, batch_idx| {
+            const texture = batch.texture;
+            const batch_vertices = batch.vertices.items;
 
-                const write_descriptor = vk.WriteDescriptorSet{
-                    .dst_set = descriptor_set,
-                    .dst_binding = 0,
-                    .dst_array_element = 0,
-                    .descriptor_count = 1,
-                    .descriptor_type = .combined_image_sampler,
-                    .p_image_info = @ptrCast(&image_info),
-                    .p_buffer_info = undefined,
-                    .p_texel_buffer_view = undefined,
-                };
+            if (batch_vertices.len == 0) continue;
 
-                vkd.updateDescriptorSets(1, @ptrCast(&write_descriptor), 0, undefined);
+            if (texture.image_view) |view| {
+                if (texture.sampler) |sampler| {
+                    // Create and bind descriptor set for this batch's texture
+                    var descriptor_set: vk.DescriptorSet = undefined;
+                    try vkd.allocateDescriptorSets(&.{
+                        .descriptor_pool = rr.sprite_descriptor_pool,
+                        .descriptor_set_count = 1,
+                        .p_set_layouts = @ptrCast(&rr.sprite_descriptor_set_layout),
+                    }, @ptrCast(&descriptor_set));
 
-                // Bind descriptor set and draw
-                vkd.cmdBindDescriptorSets(cmdbuf, .graphics, rr.sprite_pipeline_layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
+                    // Update descriptor set
+                    const image_info = vk.DescriptorImageInfo{
+                        .sampler = sampler,
+                        .image_view = view,
+                        .image_layout = .shader_read_only_optimal,
+                    };
 
-                const sprite_offset = [_]vk.DeviceSize{0};
-                vkd.cmdBindVertexBuffers(cmdbuf, 0, 1, @ptrCast(&rr.sprite_vertex_buffer), &sprite_offset);
-                vkd.cmdDraw(cmdbuf, sprite_vertex_count, 1, 0, 0);
+                    const write_descriptor = vk.WriteDescriptorSet{
+                        .dst_set = descriptor_set,
+                        .dst_binding = 0,
+                        .dst_array_element = 0,
+                        .descriptor_count = 1,
+                        .descriptor_type = .combined_image_sampler,
+                        .p_image_info = @ptrCast(&image_info),
+                        .p_buffer_info = undefined,
+                        .p_texel_buffer_view = undefined,
+                    };
+
+                    vkd.updateDescriptorSets(1, @ptrCast(&write_descriptor), 0, undefined);
+
+                    // Bind descriptor set and draw with vertex offset
+                    vkd.cmdBindDescriptorSets(cmdbuf, .graphics, rr.sprite_pipeline_layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
+
+                    const first_vertex = batch_offsets[batch_idx];
+                    vkd.cmdDraw(cmdbuf, @intCast(batch_vertices.len), 1, first_vertex, 0);
+                }
             }
         }
     }
