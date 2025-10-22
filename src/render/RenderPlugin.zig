@@ -772,12 +772,30 @@ fn render_system(
 
             const color = components.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }; // White tint
 
-            // Apply rotation in window space BEFORE clip space transform
+            // IMPORTANT: Apply rotation in window space BEFORE clip space transform
+            //
+            // Why this matters: Clip space has non-uniform scaling due to aspect ratio.
+            // If we rotate AFTER converting to clip space, the rotation matrix operates
+            // on coordinates where X and Y have different scales (e.g., 800x600 window
+            // means X spans [-1,1] over 800 pixels, Y spans [-1,1] over 600 pixels).
+            // This causes the rotation to produce a SHEAR/SKEW instead of pure rotation,
+            // because a rotation matrix assumes uniform scaling on both axes.
+            //
+            // Solution: Rotate in window space (where 1 unit = 1 pixel on both axes),
+            // THEN apply the aspect ratio transform to clip space. This preserves the
+            // orthonormal property of the rotation matrix and produces correct results.
+            //
+            // This is a requirement of using 4x4 homogeneous transformation matrices:
+            // operations must be applied in the correct order to preserve their geometric
+            // properties. Translation -> Rotation -> Scale -> Projection.
+
             const rotation = transform.rotation.z;
             const cos_r = @cos(rotation);
             const sin_r = @sin(rotation);
 
-            // Rotate the four corners in window space
+            // Standard 2D rotation matrix from 4x4 homogeneous transform (top-left 2x2):
+            // | cos(θ)  -sin(θ) |
+            // | sin(θ)   cos(θ) |
             const rotatePoint = struct {
                 fn f(x: f32, y: f32, cos_rot: f32, sin_rot: f32) struct { x: f32, y: f32 } {
                     return .{
@@ -791,8 +809,6 @@ fn render_system(
             const p2_window = rotatePoint(half_w, -half_h, cos_r, sin_r);
             const p3_window = rotatePoint(half_w, half_h, cos_r, sin_r);
             const p4_window = rotatePoint(-half_w, half_h, cos_r, sin_r);
-
-            // Note: Rotation is now done in window space before transforming to clip space
 
             // Z-Buffer Depth Mapping:
             // Map sprite z-coordinate to normalized depth [0, 1] for depth testing.
