@@ -682,12 +682,16 @@ fn render_system(
     const window_width: f32 = @floatFromInt(window_bounds.width);
     const window_height: f32 = @floatFromInt(window_bounds.height);
 
-    // Find camera (if any) for projection
+    // Find camera (if any) for projection and camera transform for offset
     var camera_mode: ?components.Camera3d = null;
+    var camera_offset = phasor_common.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
     var cam_it = q_cameras.iterator();
     if (cam_it.next()) |cam_entity| {
         if (cam_entity.get(components.Camera3d)) |cam| {
             camera_mode = cam.*;
+        }
+        if (cam_entity.get(Transform3d)) |cam_transform| {
+            camera_offset = cam_transform.translation;
         }
     }
 
@@ -768,49 +772,27 @@ fn render_system(
 
             const color = components.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 }; // White tint
 
-            // Transform to clip space based on camera mode
-            var clip_x: f32 = pos.x;
-            var clip_y: f32 = pos.y;
-            var clip_half_w: f32 = half_w;
-            var clip_half_h: f32 = half_h;
+            // Apply rotation in window space BEFORE clip space transform
+            const rotation = transform.rotation.z;
+            const cos_r = @cos(rotation);
+            const sin_r = @sin(rotation);
 
-            if (camera_mode) |cam| {
-                switch (cam) {
-                    .Viewport => |vp| {
-                        // Transform from window coordinates to clip space [-1, 1]
-                        // Window coordinates are DPI-independent logical pixels
-                        switch (vp.mode) {
-                            .Center => {
-                                // Center mode: (0,0) is center, y increases upwards
-                                clip_x = pos.x / (window_width / 2.0);
-                                clip_y = pos.y / (window_height / 2.0);
-                                clip_half_w = half_w / (window_width / 2.0);
-                                clip_half_h = half_h / (window_height / 2.0);
-                            },
-                            .TopLeft => {
-                                // TopLeft mode: (0,0) is top-left, y increases downwards
-                                clip_x = 2.0 * pos.x / window_width - 1.0;
-                                clip_y = 1.0 - 2.0 * pos.y / window_height;
-                                clip_half_w = half_w / (window_width / 2.0);
-                                clip_half_h = half_h / (window_height / 2.0);
-                            },
-                        }
-                    },
-                    .Orthographic => |ortho| {
-                        // Transform using orthographic bounds
-                        const width = ortho.right - ortho.left;
-                        const height = ortho.top - ortho.bottom;
-                        clip_x = (pos.x - ortho.left) / (width / 2.0) - 1.0;
-                        clip_y = (pos.y - ortho.bottom) / (height / 2.0) - 1.0;
-                        clip_half_w = half_w / (width / 2.0);
-                        clip_half_h = half_h / (height / 2.0);
-                    },
-                    .Perspective => {
-                        // Perspective projection not implemented for sprites yet
-                        // Use identity transform
-                    },
+            // Rotate the four corners in window space
+            const rotatePoint = struct {
+                fn f(x: f32, y: f32, cos_rot: f32, sin_rot: f32) struct { x: f32, y: f32 } {
+                    return .{
+                        .x = x * cos_rot - y * sin_rot,
+                        .y = x * sin_rot + y * cos_rot,
+                    };
                 }
-            }
+            }.f;
+
+            const p1_window = rotatePoint(-half_w, -half_h, cos_r, sin_r);
+            const p2_window = rotatePoint(half_w, -half_h, cos_r, sin_r);
+            const p3_window = rotatePoint(half_w, half_h, cos_r, sin_r);
+            const p4_window = rotatePoint(-half_w, half_h, cos_r, sin_r);
+
+            // Note: Rotation is now done in window space before transforming to clip space
 
             // Z-Buffer Depth Mapping:
             // Map sprite z-coordinate to normalized depth [0, 1] for depth testing.
@@ -835,16 +817,31 @@ fn render_system(
                 batch = &sprite_batches.items[sprite_batches.items.len - 1];
             }
 
-            // Generate quad (2 triangles = 6 vertices) in clip space with depth
+            // Transform rotated window-space corners to clip space
+            // Helper to transform window coords to clip coords
+            const toClip = struct {
+                fn f(wx: f32, wy: f32, px: f32, py: f32, ww: f32, wh: f32) struct { x: f32, y: f32 } {
+                    return .{
+                        .x = (px + wx) / (ww / 2.0),
+                        .y = (py + wy) / (wh / 2.0),
+                    };
+                }
+            }.f;
+
+            const p1_clip = toClip(p1_window.x, p1_window.y, pos.x, pos.y, window_width, window_height);
+            const p2_clip = toClip(p2_window.x, p2_window.y, pos.x, pos.y, window_width, window_height);
+            const p3_clip = toClip(p3_window.x, p3_window.y, pos.x, pos.y, window_width, window_height);
+            const p4_clip = toClip(p4_window.x, p4_window.y, pos.x, pos.y, window_width, window_height);
+
             // Triangle 1
-            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x - clip_half_w, .y = clip_y - clip_half_h, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
-            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x + clip_half_w, .y = clip_y - clip_half_h, .z = depth }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color });
-            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x + clip_half_w, .y = clip_y + clip_half_h, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p1_clip.x, .y = p1_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p2_clip.x, .y = p2_clip.y, .z = depth }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p3_clip.x, .y = p3_clip.y, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
 
             // Triangle 2
-            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x + clip_half_w, .y = clip_y + clip_half_h, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
-            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x - clip_half_w, .y = clip_y + clip_half_h, .z = depth }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
-            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = clip_x - clip_half_w, .y = clip_y - clip_half_h, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p3_clip.x, .y = p3_clip.y, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p4_clip.x, .y = p4_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
+            try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p1_clip.x, .y = p1_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
         }
     }
 
