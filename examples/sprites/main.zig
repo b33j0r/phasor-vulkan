@@ -46,9 +46,7 @@ fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(Gam
     // Create another sprite entity for the ship texture
     // Positioned above the planet, with PlayerShip component for physics
     _ = try mut_commands.createEntity(.{
-        PlayerShip{
-            .rotation = 0.0, // Start pointing right (0 degrees)
-        },
+        PlayerShip{}, // Defaults to pointing up (-π/2)
         phasor_vulkan.Transform3d{
             .translation = .{ .x = -240.0, .y = 0.0, .z = 0.0 },
             .scale = .{ .x = 0.7, .y = 0.7, .z = 0.7 },
@@ -76,7 +74,7 @@ fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(Gam
 const PlayerShip = struct {
     velocity_x: f32 = 0.0,
     velocity_y: f32 = 0.0,
-    rotation: f32 = 0.0, // radians, 0 = pointing right
+    rotation: f32 = -std.math.pi / 2.0, // radians, -π/2 = pointing up
 };
 
 // Tag component for camera that follows the ship
@@ -168,8 +166,7 @@ fn control_ship(
         transform.translation.y += ship.velocity_y;
 
         // Update visual rotation to match ship rotation
-        // Add pi/2 because sprite points up by default
-        transform.rotation.z = ship.rotation + std.math.pi / 2.0;
+        transform.rotation.z = ship.rotation;
     }
 }
 

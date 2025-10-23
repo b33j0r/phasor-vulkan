@@ -154,6 +154,10 @@ pub fn build(b: *std.Build) void {
         .{ .src = "shaders/triangle.frag", .dst = "shaders/triangle.frag.spv" },
         .{ .src = "shaders/sprite.vert", .dst = "shaders/sprite.vert.spv" },
         .{ .src = "shaders/sprite.frag", .dst = "shaders/sprite.frag.spv" },
+        .{ .src = "shaders/circle.vert", .dst = "shaders/circle.vert.spv" },
+        .{ .src = "shaders/circle.frag", .dst = "shaders/circle.frag.spv" },
+        .{ .src = "shaders/rectangle.vert", .dst = "shaders/rectangle.vert.spv" },
+        .{ .src = "shaders/rectangle.frag", .dst = "shaders/rectangle.frag.spv" },
     };
 
     // Compile shaders and collect their outputs
@@ -298,6 +302,10 @@ fn generateShaderImports() []const u8 {
         \\pub const triangle_frag align(@alignOf(u32)) = @embedFile("triangle.frag.spv").*;
         \\pub const sprite_vert align(@alignOf(u32)) = @embedFile("sprite.vert.spv").*;
         \\pub const sprite_frag align(@alignOf(u32)) = @embedFile("sprite.frag.spv").*;
+        \\pub const circle_vert align(@alignOf(u32)) = @embedFile("circle.vert.spv").*;
+        \\pub const circle_frag align(@alignOf(u32)) = @embedFile("circle.frag.spv").*;
+        \\pub const rectangle_vert align(@alignOf(u32)) = @embedFile("rectangle.vert.spv").*;
+        \\pub const rectangle_frag align(@alignOf(u32)) = @embedFile("rectangle.frag.spv").*;
         \\
     ;
 }

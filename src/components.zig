@@ -132,6 +132,38 @@ pub const Text = struct {
     pub const __trait__ = Renderable;
 };
 
+/// Circle component for rendering filled circles
+/// Position and size are in window coordinates (DPI-independent)
+pub const Circle = struct {
+    /// Radius in window coordinates (logical pixels)
+    radius: f32,
+    /// Circle color with alpha
+    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+
+    pub const __trait__ = Renderable;
+};
+
+/// Rectangle component for rendering filled rectangles
+/// Position and size are in window coordinates (DPI-independent)
+pub const Rectangle = struct {
+    /// Width in window coordinates (logical pixels)
+    width: f32,
+    /// Height in window coordinates (logical pixels)
+    height: f32,
+    /// Rectangle color with alpha
+    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+
+    pub const __trait__ = Renderable;
+};
+
+/// Vertex data for colored shape rendering (circles, rectangles)
+pub const ColorVertex = extern struct {
+    /// Position in clip space [-1, 1] with depth
+    pos: phasor_common.Vec3,
+    /// RGBA color
+    color: Color4,
+};
+
 const std = @import("std");
 const assets = @import("assets.zig");
 const phasor_common = @import("phasor-common");
