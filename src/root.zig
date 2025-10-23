@@ -29,6 +29,8 @@ pub const Layer3d = components.Layer3d;
 pub const Layer3dN = components.Layer3dN;
 pub const Text = components.Text;
 pub const Color4 = components.Color4;
+pub const Circle = components.Circle;
+pub const Rectangle = components.Rectangle;
 
 // Export time resources
 const time_plugin = @import("TimePlugin.zig");

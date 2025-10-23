@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
     });
     const phasor_ecs_mod = phasor_ecs_dep.module("phasor-ecs");
     const phasor_common_mod = phasor_ecs_dep.module("phasor-common");
+    const phasor_phases_mod = phasor_ecs_dep.module("phasor-phases");
 
     // zigimg for PNG loading
     const zigimg_dep = b.dependency("zigimg", .{
@@ -288,6 +289,45 @@ pub fn build(b: *std.Build) void {
     sprites_step.dependOn(&run_examples_sprites.step);
 
     b.installArtifact(examples_sprites);
+
+    //
+    // ─── PHARKANOID EXAMPLE ────────────────────────────────────────
+    //
+    const examples_pharkanoid_mod = b.addModule("examples-pharkanoid", .{
+        .root_source_file = b.path("examples/pharkanoid/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-vulkan", .module = phasor_vulkan_mod },
+            .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
+            .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+            .{ .name = "phasor-phases", .module = phasor_phases_mod },
+        },
+    });
+
+    const examples_pharkanoid = b.addExecutable(.{
+        .name = "examples-pharkanoid",
+        .root_module = examples_pharkanoid_mod,
+    });
+
+    examples_pharkanoid.linkLibC();
+    examples_pharkanoid.linkLibrary(glfw_lib);
+    examples_pharkanoid.linkLibrary(stb_lib);
+    examples_pharkanoid.linkSystemLibrary("vulkan");
+
+    if (target.result.os.tag.isDarwin()) {
+        examples_pharkanoid.linkFramework("Cocoa");
+        examples_pharkanoid.linkFramework("IOKit");
+        examples_pharkanoid.linkFramework("CoreVideo");
+        examples_pharkanoid.linkSystemLibrary("objc");
+    }
+
+    const run_examples_pharkanoid = b.addRunArtifact(examples_pharkanoid);
+    const pharkanoid_step = b.step("pharkanoid", "Run pharkanoid example");
+    pharkanoid_step.dependOn(&run_examples_pharkanoid.step);
+
+    b.installArtifact(examples_pharkanoid);
 }
 
 const ShaderFile = struct { src: []const u8, dst: []const u8 };

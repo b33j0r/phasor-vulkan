@@ -153,6 +153,11 @@ fn render_system(
         .allocator = rr.allocator,
     };
 
+    // Reset descriptor pools for this frame (before allocating new descriptor sets)
+    if (rr.sprite_resources.descriptor_pool) |pool| {
+        try vkd.resetDescriptorPool(pool, .{});
+    }
+
     // Acquire swapchain image
     const next_image_sem = rr.image_available[0];
     const acquire = try vkd.acquireNextImageKHR(swap.swapchain.?, std.math.maxInt(u64), next_image_sem, .null_handle);

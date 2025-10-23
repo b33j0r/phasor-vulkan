@@ -176,9 +176,6 @@ pub fn collect(
         try ctx.uploadToBuffer(vkd, components.SpriteVertex, resources.vertex_buffer, state.all_vertices.items);
     }
 
-    // Reset descriptor pool for this frame
-    try vkd.resetDescriptorPool(resources.descriptor_pool.?, .{});
-
     return state;
 }
 
