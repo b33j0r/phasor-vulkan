@@ -159,6 +159,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "shaders/circle.frag", .dst = "shaders/circle.frag.spv" },
         .{ .src = "shaders/rectangle.vert", .dst = "shaders/rectangle.vert.spv" },
         .{ .src = "shaders/rectangle.frag", .dst = "shaders/rectangle.frag.spv" },
+        .{ .src = "shaders/mesh.vert", .dst = "shaders/mesh.vert.spv" },
+        .{ .src = "shaders/mesh.frag", .dst = "shaders/mesh.frag.spv" },
     };
 
     // Compile shaders and collect their outputs
@@ -328,6 +330,43 @@ pub fn build(b: *std.Build) void {
     pharkanoid_step.dependOn(&run_examples_pharkanoid.step);
 
     b.installArtifact(examples_pharkanoid);
+
+    //
+    // ─── CUBE EXAMPLE ──────────────────────────────────────────────
+    //
+    const examples_cube_mod = b.addModule("examples-cube", .{
+        .root_source_file = b.path("examples/cube/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-vulkan", .module = phasor_vulkan_mod },
+            .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
+            .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+        },
+    });
+
+    const examples_cube = b.addExecutable(.{
+        .name = "examples-cube",
+        .root_module = examples_cube_mod,
+    });
+
+    examples_cube.linkLibC();
+    examples_cube.linkLibrary(glfw_lib);
+    examples_cube.linkSystemLibrary("vulkan");
+
+    if (target.result.os.tag.isDarwin()) {
+        examples_cube.linkFramework("Cocoa");
+        examples_cube.linkFramework("IOKit");
+        examples_cube.linkFramework("CoreVideo");
+        examples_cube.linkSystemLibrary("objc");
+    }
+
+    const run_examples_cube = b.addRunArtifact(examples_cube);
+    const cube_step = b.step("cube", "Run cube example");
+    cube_step.dependOn(&run_examples_cube.step);
+
+    b.installArtifact(examples_cube);
 }
 
 const ShaderFile = struct { src: []const u8, dst: []const u8 };
@@ -346,6 +385,8 @@ fn generateShaderImports() []const u8 {
         \\pub const circle_frag align(@alignOf(u32)) = @embedFile("circle.frag.spv").*;
         \\pub const rectangle_vert align(@alignOf(u32)) = @embedFile("rectangle.vert.spv").*;
         \\pub const rectangle_frag align(@alignOf(u32)) = @embedFile("rectangle.frag.spv").*;
+        \\pub const mesh_vert align(@alignOf(u32)) = @embedFile("mesh.vert.spv").*;
+        \\pub const mesh_frag align(@alignOf(u32)) = @embedFile("mesh.frag.spv").*;
         \\
     ;
 }

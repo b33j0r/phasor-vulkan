@@ -31,6 +31,10 @@ pub const Text = components.Text;
 pub const Color4 = components.Color4;
 pub const Circle = components.Circle;
 pub const Rectangle = components.Rectangle;
+pub const Mesh = components.Mesh;
+pub const MeshVertex = components.MeshVertex;
+pub const Material = components.Material;
+pub const OrbitCamera = components.OrbitCamera;
 
 // Export time resources
 const time_plugin = @import("TimePlugin.zig");

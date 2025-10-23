@@ -164,6 +164,44 @@ pub const ColorVertex = extern struct {
     color: Color4,
 };
 
+/// Mesh component for 3D rendering with vertex and index buffers
+pub const Mesh = struct {
+    /// Vertex data
+    vertices: []const MeshVertex,
+    /// Index data (triangles)
+    indices: []const u32,
+
+    pub const __trait__ = Renderable;
+};
+
+/// Vertex data for 3D mesh rendering
+pub const MeshVertex = extern struct {
+    /// Position in 3D space
+    pos: phasor_common.Vec3,
+    /// Normal vector
+    normal: phasor_common.Vec3,
+    /// Vertex color
+    color: Color4,
+};
+
+/// Material component for mesh rendering
+pub const Material = struct {
+    /// Base color/tint
+    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+};
+
+/// Orbit camera controller component
+pub const OrbitCamera = struct {
+    /// Distance from target
+    distance: f32 = 5.0,
+    /// Rotation speed in radians per second
+    rotation_speed: f32 = 1.0,
+    /// Current angle around target
+    angle: f32 = 0.0,
+    /// Target position to orbit around
+    target: phasor_common.Vec3 = .{},
+};
+
 const std = @import("std");
 const assets = @import("assets.zig");
 const phasor_common = @import("phasor-common");

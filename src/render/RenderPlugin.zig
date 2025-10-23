@@ -45,6 +45,7 @@ pub const RenderResource = struct {
     sprite_resources: ShapeRenderer.ShapeResources,
     circle_resources: ShapeRenderer.ShapeResources,
     rectangle_resources: ShapeRenderer.ShapeResources,
+    mesh_resources: MeshRenderer.MeshResources,
 };
 
 fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResource), r_clear: ResOpt(ClearColor)) !void {
@@ -88,6 +89,9 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     const rectangle_resources = try RectangleRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
     errdefer RectangleRenderer.deinit(vkd, &rectangle_resources);
 
+    const mesh_resources = try MeshRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
+    errdefer MeshRenderer.deinit(vkd, &mesh_resources);
+
     try commands.insertResource(RenderResource{
         .allocator = allocator,
         .render_pass = render_pass,
@@ -101,6 +105,7 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         .sprite_resources = sprite_resources,
         .circle_resources = circle_resources,
         .rectangle_resources = rectangle_resources,
+        .mesh_resources = mesh_resources,
     });
 
     std.log.info("Vulkan RenderPlugin: initialized (modular)", .{});
@@ -118,7 +123,8 @@ fn render_system(
     q_text: Query(.{ components.Text, Transform3d }),
     q_circles: Query(.{ components.Circle, Transform3d }),
     q_rectangles: Query(.{ components.Rectangle, Transform3d }),
-    q_cameras: Query(.{components.Camera3d}),
+    q_meshes: Query(.{ components.Mesh, Transform3d }),
+    q_cameras: Query(.{ components.Camera3d, Transform3d }),
 ) !void {
     _ = commands;
 
@@ -136,10 +142,14 @@ fn render_system(
 
     // Find camera for projection and offset
     var camera_offset = phasor_common.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+    var camera: ?*const components.Camera3d = null;
+    var camera_transform: ?*const Transform3d = null;
     var cam_it = q_cameras.iterator();
     if (cam_it.next()) |cam_entity| {
+        camera = cam_entity.get(components.Camera3d);
         if (cam_entity.get(Transform3d)) |cam_transform| {
             camera_offset = cam_transform.translation;
+            camera_transform = cam_transform;
         }
     }
 
@@ -182,6 +192,13 @@ fn render_system(
     const circle_count = try CircleRenderer.collect(vkd, &ctx, &rr.circle_resources, q_circles);
     const rectangle_count = try RectangleRenderer.collect(vkd, &ctx, &rr.rectangle_resources, q_rectangles);
 
+    // Collect meshes (requires camera)
+    var collected_meshes = try std.ArrayList(MeshRenderer.CollectedMesh).initCapacity(rr.allocator, 10);
+    defer collected_meshes.deinit(rr.allocator);
+    if (camera != null and camera_transform != null) {
+        collected_meshes = try MeshRenderer.collect(vkd, &ctx, &rr.mesh_resources, q_meshes, camera.?, camera_transform.?);
+    }
+
     // Record command buffer
     try recordCommandBuffer(
         vkd,
@@ -194,6 +211,7 @@ fn render_system(
         &sprite_state,
         circle_count,
         rectangle_count,
+        collected_meshes.items,
     );
 
     // Submit
@@ -236,6 +254,7 @@ fn recordCommandBuffer(
     sprite_state: *const SpriteRenderer.CollectionState,
     circle_count: u32,
     rectangle_count: u32,
+    mesh_list: []const MeshRenderer.CollectedMesh,
 ) !void {
     const cmdbuf = rr.cmd_buffers[img_idx];
 
@@ -273,6 +292,7 @@ fn recordCommandBuffer(
     }, .@"inline");
 
     // Record draw calls for each shape type
+    MeshRenderer.record(vkd, ctx, &rr.mesh_resources, cmdbuf, mesh_list);
     TriangleRenderer.record(vkd, ctx, &rr.triangle_resources, cmdbuf, triangle_count);
     SpriteRenderer.record(vkd, ctx, &rr.sprite_resources, cmdbuf, sprite_state);
     CircleRenderer.record(vkd, ctx, &rr.circle_resources, cmdbuf, circle_count);
@@ -295,6 +315,7 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResou
                 SpriteRenderer.deinit(vkd, &rr.sprite_resources);
                 CircleRenderer.deinit(vkd, &rr.circle_resources);
                 RectangleRenderer.deinit(vkd, &rr.rectangle_resources);
+                MeshRenderer.deinit(vkd, &rr.mesh_resources);
 
                 // Destroy core resources
                 destroySyncObjects(vkd, rr.allocator, .{
@@ -449,3 +470,4 @@ const TriangleRenderer = @import("TriangleRenderer.zig");
 const SpriteRenderer = @import("SpriteRenderer.zig");
 const CircleRenderer = @import("CircleRenderer.zig");
 const RectangleRenderer = @import("RectangleRenderer.zig");
+const MeshRenderer = @import("MeshRenderer.zig");
