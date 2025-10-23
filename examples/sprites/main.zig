@@ -11,6 +11,12 @@ const GameAssets = struct {
     ship_texture: phasor_vulkan.Texture = .{
         .path = "examples/sprites/assets/playerShip1_orange.png",
     },
+    orbitron_font: phasor_vulkan.Font = .{
+        .path = "examples/sprites/assets/fonts/Orbitron-VariableFont_wght.ttf",
+        .font_height = 48.0,
+        .atlas_width = 512,
+        .atlas_height = 512,
+    },
 };
 
 fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(GameAssets)) !void {
@@ -50,6 +56,18 @@ fn setup_sprite(mut_commands: *phasor_ecs.Commands, r_assets: phasor_ecs.Res(Gam
         phasor_vulkan.Sprite3D{
             .texture = &r_assets.ptr.ship_texture,
             .size_mode = .Auto, // Sprite will be sized to match texture dimensions
+        },
+    });
+
+    // Create text entity
+    _ = try mut_commands.createEntity(.{
+        phasor_vulkan.Transform3d{
+            .translation = .{ .x = -300.0, .y = -250.0, .z = 1.0 },
+        },
+        phasor_vulkan.Text{
+            .font = &r_assets.ptr.orbitron_font,
+            .text = "PHASOR VULKAN",
+            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
         },
     });
 }

@@ -6,6 +6,7 @@ const ResMut = phasor_ecs.ResMut;
 const ResOpt = phasor_ecs.ResOpt;
 const Commands = phasor_ecs.Commands;
 const DeviceResource = @import("device/DevicePlugin.zig").DeviceResource;
+const stb_truetype = @import("stb_truetype");
 
 const App = phasor_ecs.App;
 
@@ -349,3 +350,165 @@ fn copyBufferToImage(vkd: anytype, dev_res: *const DeviceResource, buffer: vk.Bu
     try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
     try vkd.queueWaitIdle(gfx_q);
 }
+
+pub const Font = struct {
+    path: [:0]const u8,
+    font_height: f32 = 48.0,
+    atlas_width: u32 = 512,
+    atlas_height: u32 = 512,
+
+    image: ?vk.Image = null,
+    image_view: ?vk.ImageView = null,
+    memory: ?vk.DeviceMemory = null,
+    sampler: ?vk.Sampler = null,
+
+    char_data: []stb_truetype.CharData = &.{},
+    first_char: u8 = 32,
+    allocator: ?std.mem.Allocator = null,
+
+    pub fn load(self: *Font, vkd: anytype, dev_res: *const DeviceResource) !void {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        // Load font file
+        const font_data = try std.fs.cwd().readFileAlloc(allocator, self.path, 10 * 1024 * 1024);
+        defer allocator.free(font_data);
+
+        // Create font atlas
+        var atlas = try stb_truetype.FontAtlas.init(allocator, font_data, self.font_height, self.atlas_width, self.atlas_height);
+        defer atlas.deinit(allocator);
+
+        // Bake ASCII characters
+        const char_data = try atlas.bakeASCII(self.first_char, 95); // ASCII 32-126
+        self.char_data = char_data;
+        self.allocator = std.heap.page_allocator; // Store allocator for cleanup
+
+        // Upload atlas texture to GPU (grayscale R8)
+        const image_size: vk.DeviceSize = @intCast(atlas.bitmap.len);
+
+        // Create staging buffer
+        const staging_buffer = try vkd.createBuffer(&.{
+            .size = image_size,
+            .usage = .{ .transfer_src_bit = true },
+            .sharing_mode = .exclusive,
+        }, null);
+        defer vkd.destroyBuffer(staging_buffer, null);
+
+        const mem_reqs = vkd.getBufferMemoryRequirements(staging_buffer);
+        const staging_memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+        defer vkd.freeMemory(staging_memory, null);
+
+        try vkd.bindBufferMemory(staging_buffer, staging_memory, 0);
+
+        // Copy bitmap to staging buffer
+        {
+            const data = try vkd.mapMemory(staging_memory, 0, image_size, .{});
+            defer vkd.unmapMemory(staging_memory);
+
+            const dst: [*]u8 = @ptrCast(@alignCast(data));
+            @memcpy(dst[0..atlas.bitmap.len], atlas.bitmap);
+        }
+
+        // Create image
+        const image = try vkd.createImage(&.{
+            .image_type = .@"2d",
+            .format = .r8_unorm,
+            .extent = .{
+                .width = self.atlas_width,
+                .height = self.atlas_height,
+                .depth = 1,
+            },
+            .mip_levels = 1,
+            .array_layers = 1,
+            .samples = .{ .@"1_bit" = true },
+            .tiling = .optimal,
+            .usage = .{ .transfer_dst_bit = true, .sampled_bit = true },
+            .sharing_mode = .exclusive,
+            .initial_layout = .undefined,
+        }, null);
+        errdefer vkd.destroyImage(image, null);
+
+        const img_mem_reqs = vkd.getImageMemoryRequirements(image);
+        const image_memory = try allocateMemory(vkd, dev_res, img_mem_reqs, .{ .device_local_bit = true });
+        errdefer vkd.freeMemory(image_memory, null);
+
+        try vkd.bindImageMemory(image, image_memory, 0);
+
+        // Transition and copy
+        try transitionImageLayout(vkd, dev_res, image, .undefined, .transfer_dst_optimal);
+        try copyBufferToImage(vkd, dev_res, staging_buffer, image, self.atlas_width, self.atlas_height);
+        try transitionImageLayout(vkd, dev_res, image, .transfer_dst_optimal, .shader_read_only_optimal);
+
+        // Create image view
+        const image_view = try vkd.createImageView(&.{
+            .image = image,
+            .view_type = .@"2d",
+            .format = .r8_unorm,
+            .components = .{
+                .r = .one,
+                .g = .one,
+                .b = .one,
+                .a = .r,
+            },
+            .subresource_range = .{
+                .aspect_mask = .{ .color_bit = true },
+                .base_mip_level = 0,
+                .level_count = 1,
+                .base_array_layer = 0,
+                .layer_count = 1,
+            },
+        }, null);
+        errdefer vkd.destroyImageView(image_view, null);
+
+        // Create sampler
+        const sampler = try vkd.createSampler(&.{
+            .mag_filter = .linear,
+            .min_filter = .linear,
+            .address_mode_u = .clamp_to_edge,
+            .address_mode_v = .clamp_to_edge,
+            .address_mode_w = .clamp_to_edge,
+            .anisotropy_enable = .false,
+            .max_anisotropy = 1.0,
+            .border_color = .int_opaque_black,
+            .unnormalized_coordinates = .false,
+            .compare_enable = .false,
+            .compare_op = .always,
+            .mipmap_mode = .linear,
+            .mip_lod_bias = 0.0,
+            .min_lod = 0.0,
+            .max_lod = 0.0,
+        }, null);
+
+        self.image = image;
+        self.image_view = image_view;
+        self.memory = image_memory;
+        self.sampler = sampler;
+
+        std.log.info("Loaded font from path: {s} ({}x{} atlas)", .{ self.path, self.atlas_width, self.atlas_height });
+    }
+
+    pub fn unload(self: *Font, vkd: anytype) !void {
+        if (self.sampler) |sampler| {
+            vkd.destroySampler(sampler, null);
+            self.sampler = null;
+        }
+        if (self.image_view) |view| {
+            vkd.destroyImageView(view, null);
+            self.image_view = null;
+        }
+        if (self.image) |image| {
+            vkd.destroyImage(image, null);
+            self.image = null;
+        }
+        if (self.memory) |mem| {
+            vkd.freeMemory(mem, null);
+            self.memory = null;
+        }
+        if (self.char_data.len > 0 and self.allocator != null) {
+            self.allocator.?.free(self.char_data);
+            self.char_data = &.{};
+        }
+        std.log.info("Unloaded font from path: {s}", .{self.path});
+    }
+};

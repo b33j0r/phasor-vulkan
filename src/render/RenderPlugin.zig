@@ -665,6 +665,7 @@ fn render_system(
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
     q_sprites: Query(.{ components.Sprite3D, Transform3d }),
+    q_text: Query(.{ components.Text, Transform3d }),
     q_cameras: Query(.{components.Camera3d}),
 ) !void {
     _ = commands;
@@ -862,6 +863,92 @@ fn render_system(
             try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p3_clip.x, .y = p3_clip.y, .z = depth }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color });
             try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p4_clip.x, .y = p4_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
             try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p1_clip.x, .y = p1_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
+        }
+    }
+
+    // Text Rendering:
+    // Convert text entities into character sprites using font atlas
+    var text_it = q_text.iterator();
+    while (text_it.next()) |entity| {
+        if (entity.get(components.Text)) |text| {
+            const transform = entity.get(Transform3d).?;
+            const font = text.font;
+
+            // Skip if font isn't loaded
+            if (font.image == null) continue;
+
+            // Find or create batch for font texture
+            var batch: ?*SpriteBatch = null;
+            for (sprite_batches.items) |*b| {
+                if (b.texture == @as(*const assets.Texture, @ptrCast(font))) {
+                    batch = b;
+                    break;
+                }
+            }
+            if (batch == null) {
+                try sprite_batches.append(rr.allocator, .{
+                    .texture = @as(*const assets.Texture, @ptrCast(font)),
+                    .vertices = try std.ArrayList(components.SpriteVertex).initCapacity(rr.allocator, text.text.len * 6),
+                });
+                batch = &sprite_batches.items[sprite_batches.items.len - 1];
+            }
+
+            // Render each character
+            var cursor_x: f32 = 0.0;
+            const pos = transform.translation;
+            const depth = pos.z;
+
+            // Apply camera offset
+            const camera_relative_x = pos.x - camera_offset.x;
+            const camera_relative_y = pos.y - camera_offset.y;
+
+            for (text.text) |ch| {
+                if (ch < font.first_char or ch >= font.first_char + font.char_data.len) continue;
+
+                const char_idx = ch - font.first_char;
+                const char_data = font.char_data[char_idx];
+
+                // Character position in window space
+                const char_x = camera_relative_x + cursor_x + char_data.xoff;
+                const char_y = camera_relative_y + char_data.yoff;
+                const char_w = char_data.x1 - char_data.x0;
+                const char_h = char_data.y1 - char_data.y0;
+
+                // UV coordinates in font atlas
+                const atlas_w: f32 = @floatFromInt(font.atlas_width);
+                const atlas_h: f32 = @floatFromInt(font.atlas_height);
+                const uv0_x = char_data.x0 / atlas_w;
+                const uv0_y = char_data.y0 / atlas_h;
+                const uv1_x = char_data.x1 / atlas_w;
+                const uv1_y = char_data.y1 / atlas_h;
+
+                // Transform to clip space
+                const toClip = struct {
+                    fn f(wx: f32, wy: f32, ww: f32, wh: f32) struct { x: f32, y: f32 } {
+                        return .{
+                            .x = wx / (ww / 2.0),
+                            .y = wy / (wh / 2.0),
+                        };
+                    }
+                }.f;
+
+                const p1 = toClip(char_x, char_y, window_width, window_height);
+                const p2 = toClip(char_x + char_w, char_y, window_width, window_height);
+                const p3 = toClip(char_x + char_w, char_y + char_h, window_width, window_height);
+                const p4 = toClip(char_x, char_y + char_h, window_width, window_height);
+
+                // Triangle 1
+                try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p1.x, .y = p1.y, .z = depth }, .uv = .{ .x = uv0_x, .y = uv0_y }, .color = text.color });
+                try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p2.x, .y = p2.y, .z = depth }, .uv = .{ .x = uv1_x, .y = uv0_y }, .color = text.color });
+                try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p3.x, .y = p3.y, .z = depth }, .uv = .{ .x = uv1_x, .y = uv1_y }, .color = text.color });
+
+                // Triangle 2
+                try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p3.x, .y = p3.y, .z = depth }, .uv = .{ .x = uv1_x, .y = uv1_y }, .color = text.color });
+                try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p4.x, .y = p4.y, .z = depth }, .uv = .{ .x = uv0_x, .y = uv1_y }, .color = text.color });
+                try batch.?.vertices.append(rr.allocator, .{ .pos = .{ .x = p1.x, .y = p1.y, .z = depth }, .uv = .{ .x = uv0_x, .y = uv0_y }, .color = text.color });
+
+                cursor_x += char_data.xadvance;
+            }
         }
     }
 

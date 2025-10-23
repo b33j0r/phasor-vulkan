@@ -10,6 +10,7 @@ const assets = @import("assets.zig");
 pub const AssetPlugin = assets.AssetPlugin;
 pub const Texture = assets.Texture;
 pub const Texture2D = assets.Texture; // Alias for use in asset structs
+pub const Font = assets.Font;
 
 // Export components
 const components = @import("components.zig");
@@ -25,3 +26,5 @@ pub const Viewport3d = components.Viewport3d;
 pub const Viewport3dN = components.Viewport3dN;
 pub const Layer3d = components.Layer3d;
 pub const Layer3dN = components.Layer3dN;
+pub const Text = components.Text;
+pub const Color4 = components.Color4;

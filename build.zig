@@ -28,6 +28,12 @@ pub fn build(b: *std.Build) void {
     });
     const zigimg_mod = zigimg_dep.module("zigimg");
 
+    // stb_truetype for font rendering
+    const stb_dep = b.dependency("stb", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     //
     // ─── BUILD GLFW C LIB ──────────────────────────────────────────
     //
@@ -100,6 +106,36 @@ pub fn build(b: *std.Build) void {
     });
     glfw_mod.addIncludePath(glfw_include);
 
+    //
+    // ─── BUILD STB_TRUETYPE C LIB ──────────────────────────────────────
+    //
+    const stb_include = stb_dep.path("");
+
+    const stb_lib_mod = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+    });
+    stb_lib_mod.addIncludePath(stb_include);
+
+    const stb_lib = b.addLibrary(.{
+        .name = "stb_truetype",
+        .linkage = .static,
+        .root_module = stb_lib_mod,
+    });
+
+    stb_lib.addCSourceFile(.{
+        .file = b.path("lib/stb_truetype/stb_truetype.c"),
+        .flags = &.{},
+    });
+
+    // Expose stb_truetype module
+    const stb_truetype_mod = b.addModule("stb_truetype", .{
+        .root_source_file = b.path("lib/stb_truetype/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stb_truetype_mod.addIncludePath(stb_include);
+
     // Vulkan
     const vulkan_headers_dep = b.dependency("vulkan_headers", .{});
 
@@ -165,6 +201,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phasor-common", .module = phasor_common_mod },
             .{ .name = "glfw", .module = glfw_mod },
             .{ .name = "zigimg", .module = zigimg_mod },
+            .{ .name = "stb_truetype", .module = stb_truetype_mod },
         },
     });
 
@@ -232,6 +269,7 @@ pub fn build(b: *std.Build) void {
 
     examples_sprites.linkLibC();
     examples_sprites.linkLibrary(glfw_lib);
+    examples_sprites.linkLibrary(stb_lib);
     examples_sprites.linkSystemLibrary("vulkan");
 
     if (target.result.os.tag.isDarwin()) {

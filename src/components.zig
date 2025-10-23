@@ -123,6 +123,15 @@ pub const Transform3d = struct {
     scale: phasor_common.Vec3 = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
 };
 
+/// Text component for rendering text strings using a font atlas
+pub const Text = struct {
+    font: *const assets.Font,
+    text: [:0]const u8,
+    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+
+    pub const __trait__ = Renderable;
+};
+
 const std = @import("std");
 const assets = @import("assets.zig");
 const phasor_common = @import("phasor-common");

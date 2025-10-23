@@ -21,6 +21,10 @@
             .url = "git+https://github.com/zigimg/zigimg#f5783e87627cbd9e0b45fad112e9f73503914f36",
             .hash = "zigimg-0.1.0-8_eo2vBrFQBhsrLpexdcDQY-zrlzkyFZfKuYX-Nry6KN",
         },
+        .stb = .{
+            .url = "https://github.com/nothings/stb/archive/refs/heads/master.tar.gz",
+            .hash = "N-V-__8AACIvTgCTqOj6KM32YnqNx1bcsaMuGAeKQEIWZ8Ph",
+        },
     },
     .minimum_zig_version = "0.15.1",
     .paths = .{""},
