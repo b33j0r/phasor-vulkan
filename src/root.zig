@@ -1,4 +1,5 @@
 pub const VulkanPlugin = @import("VulkanPlugin.zig");
+pub const TimePlugin = @import("TimePlugin.zig");
 // Optional exports if needed externally
 pub const InstancePlugin = @import("instance/InstancePlugin.zig");
 pub const DevicePlugin = @import("device/DevicePlugin.zig");
@@ -28,3 +29,8 @@ pub const Layer3d = components.Layer3d;
 pub const Layer3dN = components.Layer3dN;
 pub const Text = components.Text;
 pub const Color4 = components.Color4;
+
+// Export time resources
+const time_plugin = @import("TimePlugin.zig");
+pub const DeltaTime = time_plugin.DeltaTime;
+pub const ElapsedTime = time_plugin.ElapsedTime;
