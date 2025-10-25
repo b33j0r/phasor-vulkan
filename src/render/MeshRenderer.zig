@@ -72,8 +72,9 @@ pub fn init(
         .window_height = 0,
         .camera_offset = .{},
         .allocator = undefined,
+        .upload_counter = undefined,
     };
-    const vertex_memory = try ctx.allocateMemory(vkd, vertex_mem_reqs, .{ .device_local_bit = true });
+    const vertex_memory = try ctx.allocateMemory(vkd, vertex_mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(vertex_memory, null);
 
     try vkd.bindBufferMemory(vertex_buffer, vertex_memory, 0);
@@ -87,7 +88,7 @@ pub fn init(
     errdefer vkd.destroyBuffer(index_buffer, null);
 
     const index_mem_reqs = vkd.getBufferMemoryRequirements(index_buffer);
-    const index_memory = try ctx.allocateMemory(vkd, index_mem_reqs, .{ .device_local_bit = true });
+    const index_memory = try ctx.allocateMemory(vkd, index_mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(index_memory, null);
 
     try vkd.bindBufferMemory(index_buffer, index_memory, 0);
@@ -184,13 +185,13 @@ pub fn collect(
         }
     }
 
-    // Upload all mesh data
+    // Write mesh data directly to mapped memory
     if (all_vertices.items.len > 0) {
-        try ctx.uploadToBuffer(vkd, components.MeshVertex, resources.vertex_buffer, all_vertices.items);
+        try ctx.writeToMappedBuffer(vkd, components.MeshVertex, resources.vertex_memory, all_vertices.items);
     }
 
     if (all_indices.items.len > 0) {
-        try ctx.uploadToBuffer(vkd, u32, resources.index_buffer, all_indices.items);
+        try ctx.writeToMappedBuffer(vkd, u32, resources.index_memory, all_indices.items);
     }
 
     return meshes;

@@ -54,8 +54,9 @@ pub fn init(
         .window_height = 0,
         .camera_offset = .{},
         .allocator = undefined,
+        .upload_counter = undefined, // Not needed for init
     };
-    const memory = try ctx.allocateMemory(vkd, mem_reqs, .{ .device_local_bit = true });
+    const memory = try ctx.allocateMemory(vkd, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(memory, null);
 
     try vkd.bindBufferMemory(buffer, memory, 0);
@@ -93,7 +94,7 @@ pub fn collect(
     }
 
     if (vertices.items.len > 0) {
-        try ctx.uploadToBuffer(vkd, components.Vertex, resources.vertex_buffer, vertices.items);
+        try ctx.writeToMappedBuffer(vkd, components.Vertex, resources.vertex_memory, vertices.items);
     }
 
     return @intCast(vertices.items.len);

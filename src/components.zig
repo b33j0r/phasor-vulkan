@@ -123,13 +123,68 @@ pub const Transform3d = struct {
     scale: phasor_common.Vec3 = .{ .x = 1.0, .y = 1.0, .z = 1.0 },
 };
 
+/// Horizontal alignment for text rendering
+pub const HorizontalAlignment = enum {
+    Left,
+    Center,
+    Right,
+};
+
+/// Vertical alignment for text rendering
+pub const VerticalAlignment = enum {
+    Top,
+    Center,
+    Baseline,
+    Bottom,
+};
+
 /// Text component for rendering text strings using a font atlas
 pub const Text = struct {
     font: *const assets.Font,
     text: [:0]const u8,
     color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+    horizontal_alignment: HorizontalAlignment = .Left,
+    vertical_alignment: VerticalAlignment = .Baseline,
+    /// If true, text was heap-allocated and should be freed in deinit
+    owns_text: bool = false,
+    /// Allocator used to allocate the text (only used if owns_text is true)
+    allocator: ?std.mem.Allocator = null,
 
     pub const __trait__ = Renderable;
+
+    /// Initialize Text with a static string literal (no allocation)
+    pub fn initStatic(font: *const assets.Font, text: [:0]const u8, color: Color4) Text {
+        return .{
+            .font = font,
+            .text = text,
+            .color = color,
+            .owns_text = false,
+            .allocator = null,
+        };
+    }
+
+    /// Initialize Text with a heap-allocated dynamic string
+    /// The Text component takes ownership and will free the string in deinit
+    pub fn initDynamic(font: *const assets.Font, text: [:0]const u8, color: Color4, allocator: std.mem.Allocator) Text {
+        return .{
+            .font = font,
+            .text = text,
+            .color = color,
+            .owns_text = true,
+            .allocator = allocator,
+        };
+    }
+
+    /// Called by phasor-ecs when component is replaced or removed
+    /// Provides RAII-like lifecycle management within the archetype database
+    pub fn deinit(self: *Text) void {
+        if (self.owns_text) {
+            if (self.allocator) |alloc| {
+                alloc.free(self.text);
+            }
+            self.owns_text = false;
+        }
+    }
 };
 
 /// Circle component for rendering filled circles

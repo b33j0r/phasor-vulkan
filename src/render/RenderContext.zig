@@ -27,6 +27,9 @@ camera_offset: phasor_common.Vec3,
 /// Memory allocator
 allocator: std.mem.Allocator,
 
+/// Upload counter for diagnostics
+upload_counter: *u64,
+
 /// Transform a point from window coordinates to clip space
 /// Window coords: origin at specified position, units in logical pixels
 /// Clip space: [-1, 1] range for both X and Y
@@ -91,7 +94,27 @@ pub fn allocateMemory(
     return error.NoSuitableMemoryType;
 }
 
+/// Write data directly to HOST_VISIBLE memory (no staging buffer needed)
+pub fn writeToMappedBuffer(
+    self: RenderContext,
+    vkd: anytype,
+    comptime T: type,
+    memory: vk.DeviceMemory,
+    data: []const T,
+) !void {
+    if (data.len == 0) return;
+    self.upload_counter.* += 1;
+
+    const size = @sizeOf(T) * data.len;
+    const mapped = try vkd.mapMemory(memory, 0, size, .{});
+    defer vkd.unmapMemory(memory);
+
+    const dest_slice: [*]T = @ptrCast(@alignCast(mapped));
+    @memcpy(dest_slice[0..data.len], data);
+}
+
 /// Upload vertex data to a device buffer using staging buffer
+/// Note: This function does NOT wait for completion - synchronization handled by frame fences
 pub fn uploadToBuffer(
     self: RenderContext,
     vkd: anytype,
@@ -99,6 +122,8 @@ pub fn uploadToBuffer(
     dst_buffer: vk.Buffer,
     data: []const T,
 ) !void {
+    if (data.len == 0) return;
+    self.upload_counter.* += 1;
     const size = @sizeOf(T) * data.len;
 
     const staging_buffer = try vkd.createBuffer(&.{
@@ -137,6 +162,10 @@ pub fn uploadToBuffer(
 
     try vkd.endCommandBuffer(cmdbuf_handle);
 
+    // Create a fence for this upload
+    const upload_fence = try vkd.createFence(&.{}, null);
+    defer vkd.destroyFence(upload_fence, null);
+
     const submit = vk.SubmitInfo{
         .command_buffer_count = 1,
         .p_command_buffers = @ptrCast(&cmdbuf_handle),
@@ -144,6 +173,8 @@ pub fn uploadToBuffer(
     };
 
     const gfx_q = self.dev_res.graphics_queue.?;
-    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
-    try vkd.queueWaitIdle(gfx_q);
+    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), upload_fence);
+
+    // Wait for upload to complete before freeing staging resources
+    _ = try vkd.waitForFences(1, @ptrCast(&upload_fence), vk.Bool32.true, std.math.maxInt(u64));
 }

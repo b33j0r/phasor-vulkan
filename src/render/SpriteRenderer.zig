@@ -68,6 +68,7 @@ pub fn init(
     };
 
     const descriptor_pool = try vkd.createDescriptorPool(&.{
+        .flags = .{},
         .pool_size_count = 1,
         .p_pool_sizes = @ptrCast(&pool_size),
         .max_sets = 100,
@@ -101,15 +102,17 @@ pub fn init(
 
     const mem_reqs = vkd.getBufferMemoryRequirements(buffer);
     const ctx = RenderContext{
-        
+
         .dev_res = dev_res,
         .cmd_pool = undefined,
         .window_width = 0,
         .window_height = 0,
         .camera_offset = .{},
         .allocator = undefined,
+        .upload_counter = undefined,
     };
-    const memory = try ctx.allocateMemory(vkd, mem_reqs, .{ .device_local_bit = true });
+    // Use HOST_VISIBLE memory to avoid staging buffers and sync issues
+    const memory = try ctx.allocateMemory(vkd, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(memory, null);
 
     try vkd.bindBufferMemory(buffer, memory, 0);
@@ -171,9 +174,9 @@ pub fn collect(
         try state.all_vertices.appendSlice(ctx.allocator, batch.vertices.items);
     }
 
-    // Upload all vertices at once
+    // Write vertices directly to mapped memory (no staging buffer)
     if (state.all_vertices.items.len > 0) {
-        try ctx.uploadToBuffer(vkd, components.SpriteVertex, resources.vertex_buffer, state.all_vertices.items);
+        try ctx.writeToMappedBuffer(vkd, components.SpriteVertex, resources.vertex_memory, state.all_vertices.items);
     }
 
     return state;
@@ -329,6 +332,37 @@ fn collectText(
     const camera_relative_x = pos.x - ctx.camera_offset.x;
     const camera_relative_y = pos.y - ctx.camera_offset.y;
 
+    // First pass: calculate text dimensions for alignment
+    var text_width: f32 = 0.0;
+    var text_height: f32 = 0.0;
+    var min_yoff: f32 = 0.0;
+    var max_bottom: f32 = 0.0;
+
+    for (text.text) |ch| {
+        if (ch < font.first_char or ch >= font.first_char + font.char_data.len) continue;
+        const char_idx = ch - font.first_char;
+        const char_data = font.char_data[char_idx];
+
+        text_width += char_data.xadvance;
+        min_yoff = @min(min_yoff, char_data.yoff);
+        max_bottom = @max(max_bottom, char_data.yoff + (char_data.y1 - char_data.y0));
+    }
+    text_height = max_bottom - min_yoff;
+
+    // Calculate alignment offsets
+    const h_offset: f32 = switch (text.horizontal_alignment) {
+        .Left => 0.0,
+        .Center => -text_width / 2.0,
+        .Right => -text_width,
+    };
+
+    const v_offset: f32 = switch (text.vertical_alignment) {
+        .Top => -min_yoff,
+        .Center => -(min_yoff + text_height / 2.0),
+        .Baseline => 0.0,
+        .Bottom => -max_bottom,
+    };
+
     var cursor_x: f32 = 0.0;
 
     for (text.text) |ch| {
@@ -337,8 +371,8 @@ fn collectText(
         const char_idx = ch - font.first_char;
         const char_data = font.char_data[char_idx];
 
-        const char_x = camera_relative_x + cursor_x + char_data.xoff;
-        const char_y = camera_relative_y + char_data.yoff;
+        const char_x = camera_relative_x + h_offset + cursor_x + char_data.xoff;
+        const char_y = camera_relative_y + v_offset + char_data.yoff;
         const char_w = char_data.x1 - char_data.x0;
         const char_h = char_data.y1 - char_data.y0;
 

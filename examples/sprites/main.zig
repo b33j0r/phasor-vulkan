@@ -224,7 +224,7 @@ fn camera_follow_ship(
 
 // System to control the player ship with Escape Velocity-like physics
 fn control_ship(
-    key_events: phasor_ecs.EventReader(phasor_glfw.InputPlugin.KeyDown),
+    key_events: phasor_ecs.EventReader(phasor_glfw.InputPlugin.KeyPressed),
     q_ship: phasor_ecs.Query(.{ PlayerShip, Ship, phasor_vulkan.Transform3d }),
     delta_time: phasor_ecs.Res(phasor_vulkan.DeltaTime),
 ) !void {

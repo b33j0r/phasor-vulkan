@@ -4,6 +4,7 @@ const phasor_glfw = @import("phasor-glfw");
 const phasor_vulkan = @import("phasor-vulkan");
 const phasor_common = @import("phasor-common");
 const phasor_phases = @import("phasor-phases");
+const Physics = @import("BallBrickPhysics.zig");
 
 const PhasePlugin = phasor_phases.PhasePlugin;
 const PhaseContext = phasor_phases.PhaseContext;
@@ -61,7 +62,8 @@ const Wall = struct {};
 
 const UIText = struct {
     text_type: TextType,
-    buffer: [128]u8 = undefined,
+    buffer: [128:0]u8 = undefined,
+    buffer_len: usize = 0,
 };
 
 const TextType = enum {
@@ -73,6 +75,7 @@ const TextType = enum {
     Victory,
     PauseMenu,
     HighScore,
+    FinalScore,
 };
 
 // ============================================================================
@@ -116,6 +119,7 @@ const Playing = struct {
         try ctx.addUpdateSystem(ball_movement);
         try ctx.addUpdateSystem(ball_collision);
         try ctx.addUpdateSystem(brick_collision);
+        try ctx.addUpdateSystem(update_ui);
         try ctx.addUpdateSystem(check_win_lose);
         try ctx.addUpdateSystem(pause_input);
     }
@@ -133,6 +137,7 @@ const Loser = struct {
     pub fn enter(_: *Loser, ctx: *PhaseContext) !void {
         try ctx.addEnterSystem(setup_loser_screen);
         try ctx.addExitSystem(cleanup_loser_screen);
+        try ctx.addUpdateSystem(update_ui);
         try ctx.addUpdateSystem(loser_input);
     }
 };
@@ -141,6 +146,7 @@ const Winner = struct {
     pub fn enter(_: *Winner, ctx: *PhaseContext) !void {
         try ctx.addEnterSystem(setup_winner_screen);
         try ctx.addExitSystem(cleanup_winner_screen);
+        try ctx.addUpdateSystem(update_ui);
         try ctx.addUpdateSystem(winner_input);
     }
 };
@@ -179,12 +185,14 @@ fn setup_main_menu(
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Title },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -200.0, .y = -100.0, .z = 0.0 },
+            .translation = .{ .x = 0.0, .y = -80.0, .z = 0.0 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
             .text = "PHARKANOID",
             .color = .{ .r = 0.2, .g = 0.8, .b = 1.0, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 
@@ -192,13 +200,15 @@ fn setup_main_menu(
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Subtitle },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -220.0, .y = 0.0, .z = 0.0 },
+            .translation = .{ .x = 0.0, .y = 40.0, .z = 0.0 },
             .scale = .{ .x = 0.5, .y = 0.5, .z = 0.5 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
             .text = "Press SPACE to Start",
             .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 }
@@ -214,6 +224,7 @@ fn main_menu_input(
     key_events: phasor_ecs.EventReader(phasor_glfw.InputPlugin.KeyDown),
     commands: *phasor_ecs.Commands,
 ) !void {
+    // Drain ALL events to prevent memory leak in BroadcastChannel
     while (key_events.tryRecv()) |event| {
         if (event.key == .space) {
             try commands.insertResource(NextPhase{ .phase = GamePhases{ .InGame = .{ .Playing = .{} } } });
@@ -250,8 +261,8 @@ fn setup_game(
 
     // Create walls
     const wall_thickness: f32 = 20.0;
-    const arena_width: f32 = 600.0;
-    const arena_height: f32 = 600.0;
+    const arena_width: f32 = 640.0;
+    const arena_height: f32 = 560.0;
 
     // Top wall
     _ = try mut_commands.createEntity(.{
@@ -262,7 +273,7 @@ fn setup_game(
         phasor_vulkan.Rectangle{
             .width = arena_width,
             .height = wall_thickness,
-            .color = .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 1.0 },
+            .color = .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 },
         },
     });
 
@@ -270,12 +281,12 @@ fn setup_game(
     _ = try mut_commands.createEntity(.{
         Wall{},
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -arena_width / 2.0, .y = 0.0, .z = 0.0 },
+            .translation = .{ .x = -arena_width / 2.0, .y = wall_thickness / 2.0, .z = 0.0 },
         },
         phasor_vulkan.Rectangle{
             .width = wall_thickness,
-            .height = arena_height,
-            .color = .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 1.0 },
+            .height = arena_height + wall_thickness,
+            .color = .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 },
         },
     });
 
@@ -283,12 +294,12 @@ fn setup_game(
     _ = try mut_commands.createEntity(.{
         Wall{},
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = arena_width / 2.0, .y = 0.0, .z = 0.0 },
+            .translation = .{ .x = arena_width / 2.0, .y = wall_thickness / 2.0, .z = 0.0 },
         },
         phasor_vulkan.Rectangle{
             .width = wall_thickness,
-            .height = arena_height,
-            .color = .{ .r = 0.3, .g = 0.3, .b = 0.3, .a = 1.0 },
+            .height = arena_height + wall_thickness,
+            .color = .{ .r = 0.5, .g = 0.5, .b = 0.5, .a = 1.0 },
         },
     });
 
@@ -361,26 +372,26 @@ fn setup_game(
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Score },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -380.0, .y = -280.0, .z = 0.0 },
-            .scale = .{ .x = 0.4, .y = 0.4, .z = 0.4 },
+            .translation = .{ .x = -280.0, .y = -310.0, .z = 1.0 },
+            .scale = .{ .x = 0.5, .y = 0.5, .z = 0.5 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
-            .text = "Score: 0",
-            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .text = "SCORE: 0",
+            .color = .{ .r = 0.3, .g = 0.8, .b = 1.0, .a = 1.0 },
         },
     });
 
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Lives },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = 200.0, .y = -280.0, .z = 0.0 },
-            .scale = .{ .x = 0.4, .y = 0.4, .z = 0.4 },
+            .translation = .{ .x = 130.0, .y = -310.0, .z = 1.0 },
+            .scale = .{ .x = 0.5, .y = 0.5, .z = 0.5 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
-            .text = "Lives: 3",
-            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .text = "LIVES: 3",
+            .color = .{ .r = 1.0, .g = 0.4, .b = 0.4, .a = 1.0 },
         },
     });
 }
@@ -418,7 +429,7 @@ fn cleanup_game(
 // ============================================================================
 
 fn paddle_control(
-    key_events: phasor_ecs.EventReader(phasor_glfw.InputPlugin.KeyDown),
+    key_events: phasor_ecs.EventReader(phasor_glfw.InputPlugin.KeyPressed),
     q_paddle: phasor_ecs.Query(.{ Paddle, phasor_vulkan.Transform3d }),
     delta_time: phasor_ecs.Res(phasor_vulkan.DeltaTime),
 ) !void {
@@ -426,8 +437,10 @@ fn paddle_control(
 
     var move_left = false;
     var move_right = false;
+    var event_count: usize = 0;
 
     while (key_events.tryRecv()) |event| {
+        event_count += 1;
         switch (event.key) {
             .a, .left => move_left = true,
             .d, .right => move_right = true,
@@ -483,10 +496,9 @@ fn ball_movement(
             // Follow paddle
             var paddle_it = q_paddle.iterator();
             if (paddle_it.next()) |paddle_entity| {
-                const paddle = paddle_entity.get(Paddle).?;
                 const paddle_transform = paddle_entity.get(phasor_vulkan.Transform3d).?;
                 ball_transform.translation.x = paddle_transform.translation.x;
-                ball_transform.translation.y = paddle_transform.translation.y - paddle.height / 2.0 - ball.radius - 5.0;
+                ball_transform.translation.y = paddle_transform.translation.y - 20.0;
             }
 
             // Launch ball
@@ -517,44 +529,24 @@ fn ball_collision(
 
         if (ball.attached_to_paddle) return;
 
+        var ball_vel = Physics.Velocity{ .x = ball.velocity_x, .y = ball.velocity_y };
+
         // Check wall collisions
         var wall_it = q_walls.iterator();
         while (wall_it.next()) |wall_entity| {
             const wall_transform = wall_entity.get(phasor_vulkan.Transform3d).?;
             const wall_rect = wall_entity.get(phasor_vulkan.Rectangle).?;
 
-            const ball_x = ball_transform.translation.x;
-            const ball_y = ball_transform.translation.y;
-            const wall_x = wall_transform.translation.x;
-            const wall_y = wall_transform.translation.y;
-
-            const ball_left = ball_x - ball.radius;
-            const ball_right = ball_x + ball.radius;
-            const ball_top = ball_y - ball.radius;
-            const ball_bottom = ball_y + ball.radius;
-
-            const wall_left = wall_x - wall_rect.width / 2.0;
-            const wall_right = wall_x + wall_rect.width / 2.0;
-            const wall_top = wall_y - wall_rect.height / 2.0;
-            const wall_bottom = wall_y + wall_rect.height / 2.0;
-
-            if (ball_right > wall_left and ball_left < wall_right and
-                ball_bottom > wall_top and ball_top < wall_bottom)
-            {
-                // Determine collision side
-                const overlap_left = ball_right - wall_left;
-                const overlap_right = wall_right - ball_left;
-                const overlap_top = ball_bottom - wall_top;
-                const overlap_bottom = wall_bottom - ball_top;
-
-                const min_overlap = @min(@min(overlap_left, overlap_right), @min(overlap_top, overlap_bottom));
-
-                if (min_overlap == overlap_left or min_overlap == overlap_right) {
-                    ball.velocity_x = -ball.velocity_x;
-                } else {
-                    ball.velocity_y = -ball.velocity_y;
-                }
-            }
+            _ = Physics.resolveBallWallCollision(
+                &ball_transform.translation.x,
+                &ball_transform.translation.y,
+                ball.radius,
+                &ball_vel,
+                wall_transform.translation.x,
+                wall_transform.translation.y,
+                wall_rect.width / 2.0,
+                wall_rect.height / 2.0,
+            );
         }
 
         // Check paddle collision
@@ -563,32 +555,22 @@ fn ball_collision(
             const paddle = paddle_entity.get(Paddle).?;
             const paddle_transform = paddle_entity.get(phasor_vulkan.Transform3d).?;
 
-            const ball_x = ball_transform.translation.x;
-            const ball_y = ball_transform.translation.y;
-            const paddle_x = paddle_transform.translation.x;
-            const paddle_y = paddle_transform.translation.y;
-
-            const ball_bottom = ball_y + ball.radius;
-            const paddle_top = paddle_y - paddle.height / 2.0;
-            const paddle_bottom = paddle_y + paddle.height / 2.0;
-            const paddle_left = paddle_x - paddle.width / 2.0;
-            const paddle_right = paddle_x + paddle.width / 2.0;
-
-            if (ball_bottom >= paddle_top and ball_y < paddle_bottom and
-                ball_x >= paddle_left and ball_x <= paddle_right and ball.velocity_y > 0)
-            {
-                ball.velocity_y = -@abs(ball.velocity_y);
-
-                // Add spin based on where the ball hits the paddle
-                const hit_pos = (ball_x - paddle_x) / (paddle.width / 2.0);
-                ball.velocity_x = hit_pos * ball.speed * 0.7;
-
-                // Normalize velocity
-                const speed = @sqrt(ball.velocity_x * ball.velocity_x + ball.velocity_y * ball.velocity_y);
-                ball.velocity_x = (ball.velocity_x / speed) * ball.speed;
-                ball.velocity_y = (ball.velocity_y / speed) * ball.speed;
-            }
+            _ = Physics.resolveBallPaddleCollision(
+                &ball_transform.translation.x,
+                &ball_transform.translation.y,
+                ball.radius,
+                &ball_vel,
+                ball.speed,
+                paddle_transform.translation.x,
+                paddle_transform.translation.y,
+                paddle.width / 2.0,
+                paddle.height / 2.0,
+            );
         }
+
+        // Update ball velocity
+        ball.velocity_x = ball_vel.x;
+        ball.velocity_y = ball_vel.y;
 
         // Check if ball fell off bottom
         if (ball_transform.translation.y > 320.0) {
@@ -617,54 +599,76 @@ fn brick_collision(
 
         if (ball.attached_to_paddle) return;
 
-        const ball_x = ball_transform.translation.x;
-        const ball_y = ball_transform.translation.y;
+        var ball_vel = Physics.Velocity{ .x = ball.velocity_x, .y = ball.velocity_y };
 
         var brick_it = q_bricks.iterator();
+        var bricks_remaining: usize = 0;
         while (brick_it.next()) |brick_entity| {
+            bricks_remaining += 1;
             var brick = brick_entity.get(Brick).?;
             const brick_transform = brick_entity.get(phasor_vulkan.Transform3d).?;
             const brick_rect = brick_entity.get(phasor_vulkan.Rectangle).?;
 
-            const brick_x = brick_transform.translation.x;
-            const brick_y = brick_transform.translation.y;
+            const hit = Physics.resolveBallBrickCollision(
+                &ball_transform.translation.x,
+                &ball_transform.translation.y,
+                ball.radius,
+                &ball_vel,
+                brick_transform.translation.x,
+                brick_transform.translation.y,
+                brick_rect.width / 2.0,
+                brick_rect.height / 2.0,
+            );
 
-            const ball_left = ball_x - ball.radius;
-            const ball_right = ball_x + ball.radius;
-            const ball_top = ball_y - ball.radius;
-            const ball_bottom = ball_y + ball.radius;
-
-            const brick_left = brick_x - brick_rect.width / 2.0;
-            const brick_right = brick_x + brick_rect.width / 2.0;
-            const brick_top = brick_y - brick_rect.height / 2.0;
-            const brick_bottom = brick_y + brick_rect.height / 2.0;
-
-            if (ball_right > brick_left and ball_left < brick_right and
-                ball_bottom > brick_top and ball_top < brick_bottom)
-            {
+            if (hit) {
                 // Hit brick
                 brick.hits_remaining -= 1;
+                std.log.info("brick_collision: Brick hit! hits_remaining={d}, entity_id={d}", .{ brick.hits_remaining, brick_entity.id });
                 if (brick.hits_remaining == 0) {
                     r_state.ptr.score += brick.points;
+                    std.log.info("brick_collision: Destroying brick entity_id={d}, Score: {d}, Bricks left: ~{d}", .{ brick_entity.id, r_state.ptr.score, bricks_remaining - 1 });
                     try commands.removeEntity(brick_entity.id);
+                    std.log.info("brick_collision: Entity {d} removal queued", .{brick_entity.id});
                 }
-
-                // Bounce ball
-                const overlap_left = ball_right - brick_left;
-                const overlap_right = brick_right - ball_left;
-                const overlap_top = ball_bottom - brick_top;
-                const overlap_bottom = brick_bottom - ball_top;
-
-                const min_overlap = @min(@min(overlap_left, overlap_right), @min(overlap_top, overlap_bottom));
-
-                if (min_overlap == overlap_left or min_overlap == overlap_right) {
-                    ball.velocity_x = -ball.velocity_x;
-                } else {
-                    ball.velocity_y = -ball.velocity_y;
-                }
-
                 break;
             }
+        }
+
+        // Update ball velocity
+        ball.velocity_x = ball_vel.x;
+        ball.velocity_y = ball_vel.y;
+    }
+}
+
+fn update_ui(
+    q_ui: phasor_ecs.Query(.{ UIText, phasor_vulkan.Text }),
+    r_state: phasor_ecs.Res(GameState),
+) !void {
+    var it = q_ui.iterator();
+    while (it.next()) |entity| {
+        var ui_text = entity.get(UIText).?;
+        var text = entity.get(phasor_vulkan.Text).?;
+
+        switch (ui_text.text_type) {
+            .Score => {
+                const len = try std.fmt.bufPrint(&ui_text.buffer, "SCORE: {d}", .{r_state.ptr.score});
+                ui_text.buffer[len.len] = 0;
+                ui_text.buffer_len = len.len;
+                text.text = ui_text.buffer[0..ui_text.buffer_len :0];
+            },
+            .Lives => {
+                const len = try std.fmt.bufPrint(&ui_text.buffer, "LIVES: {d}", .{r_state.ptr.lives});
+                ui_text.buffer[len.len] = 0;
+                ui_text.buffer_len = len.len;
+                text.text = ui_text.buffer[0..ui_text.buffer_len :0];
+            },
+            .FinalScore => {
+                const len = try std.fmt.bufPrint(&ui_text.buffer, "Final Score: {d}", .{r_state.ptr.score});
+                ui_text.buffer[len.len] = 0;
+                ui_text.buffer_len = len.len;
+                text.text = ui_text.buffer[0..ui_text.buffer_len :0];
+            },
+            else => {},
         }
     }
 }
@@ -694,7 +698,6 @@ fn check_win_lose(
                     break;
                 }
             }
-            
         }
 
         try commands.insertResource(NextPhase{ .phase = GamePhases{ .InGame = .{ .Winner = .{} } } });
@@ -784,48 +787,65 @@ fn pause_menu_input(
 fn setup_loser_screen(
     mut_commands: *phasor_ecs.Commands,
     r_assets: phasor_ecs.Res(GameAssets),
-    r_state: phasor_ecs.Res(GameState),
 ) !void {
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .GameOver },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -150.0, .y = -80.0, .z = 1.0 },
-            .scale = .{ .x = 0.7, .y = 0.7, .z = 0.7 },
+            .translation = .{ .x = 0.0, .y = -120.0, .z = 1.0 },
+            .scale = .{ .x = 0.8, .y = 0.8, .z = 0.8 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
             .text = "GAME OVER",
             .color = .{ .r = 1.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 
-    // Show final score
-    var buf: [64:0]u8 = undefined;
-    const score_text = try std.fmt.bufPrintZ(&buf, "Final Score: {d}", .{r_state.ptr.score});
+    // Show final score using UIText buffer
+    _ = try mut_commands.createEntity(.{
+        UIText{ .text_type = .FinalScore },
+        phasor_vulkan.Transform3d{
+            .translation = .{ .x = 0.0, .y = -30.0, .z = 1.0 },
+            .scale = .{ .x = 0.5, .y = 0.5, .z = 0.5 },
+        },
+        phasor_vulkan.Text{
+            .font = &r_assets.ptr.orbitron_font,
+            .text = "Final Score: 0",
+            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
+        },
+    });
 
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Subtitle },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -180.0, .y = 0.0, .z = 1.0 },
+            .translation = .{ .x = 0.0, .y = 40.0, .z = 1.0 },
             .scale = .{ .x = 0.4, .y = 0.4, .z = 0.4 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
-            .text = score_text,
-            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .text = "Press SPACE for Menu",
+            .color = .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Subtitle },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -280.0, .y = 50.0, .z = 1.0 },
-            .scale = .{ .x = 0.35, .y = 0.35, .z = 0.35 },
+            .translation = .{ .x = 0.0, .y = 80.0, .z = 1.0 },
+            .scale = .{ .x = 0.4, .y = 0.4, .z = 0.4 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
-            .text = "SPACE: Menu  H: High Scores",
-            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .text = "Press H for High Scores",
+            .color = .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 }
@@ -867,48 +887,65 @@ fn loser_input(
 fn setup_winner_screen(
     mut_commands: *phasor_ecs.Commands,
     r_assets: phasor_ecs.Res(GameAssets),
-    r_state: phasor_ecs.Res(GameState),
 ) !void {
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Victory },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -180.0, .y = -80.0, .z = 1.0 },
-            .scale = .{ .x = 0.7, .y = 0.7, .z = 0.7 },
+            .translation = .{ .x = 0.0, .y = -120.0, .z = 1.0 },
+            .scale = .{ .x = 0.8, .y = 0.8, .z = 0.8 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
             .text = "YOU WIN!",
             .color = .{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 
-    // Show final score
-    var buf: [64:0]u8 = undefined;
-    const score_text = try std.fmt.bufPrintZ(&buf, "Final Score: {d}", .{r_state.ptr.score});
+    // Show final score using UIText buffer
+    _ = try mut_commands.createEntity(.{
+        UIText{ .text_type = .FinalScore },
+        phasor_vulkan.Transform3d{
+            .translation = .{ .x = 0.0, .y = -30.0, .z = 1.0 },
+            .scale = .{ .x = 0.5, .y = 0.5, .z = 0.5 },
+        },
+        phasor_vulkan.Text{
+            .font = &r_assets.ptr.orbitron_font,
+            .text = "Final Score: 0",
+            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
+        },
+    });
 
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Subtitle },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -180.0, .y = 0.0, .z = 1.0 },
+            .translation = .{ .x = 0.0, .y = 40.0, .z = 1.0 },
             .scale = .{ .x = 0.4, .y = 0.4, .z = 0.4 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
-            .text = score_text,
-            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .text = "Press SPACE for Menu",
+            .color = .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 
     _ = try mut_commands.createEntity(.{
         UIText{ .text_type = .Subtitle },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -280.0, .y = 50.0, .z = 1.0 },
-            .scale = .{ .x = 0.35, .y = 0.35, .z = 0.35 },
+            .translation = .{ .x = 0.0, .y = 80.0, .z = 1.0 },
+            .scale = .{ .x = 0.4, .y = 0.4, .z = 0.4 },
         },
         phasor_vulkan.Text{
             .font = &r_assets.ptr.orbitron_font,
-            .text = "SPACE: Menu  H: High Scores",
-            .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+            .text = "Press H for High Scores",
+            .color = .{ .r = 0.8, .g = 0.8, .b = 0.8, .a = 1.0 },
+            .horizontal_alignment = .Center,
+            .vertical_alignment = .Center,
         },
     });
 }
@@ -1046,7 +1083,8 @@ pub fn main() !u8 {
     const window_plugin = phasor_glfw.WindowPlugin.init(.{
         .title = "Pharkanoid - Phasor Arkanoid",
         .width = 800,
-        .height = 600,
+        .height = 700,
+        .flags = phasor_glfw.WindowPlugin.WindowFlags.HighDPI,
     });
     try app.addPlugin(&window_plugin);
 

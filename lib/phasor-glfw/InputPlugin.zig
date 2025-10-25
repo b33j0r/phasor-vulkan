@@ -5,7 +5,8 @@ const InputPlugin = @This();
 
 pub fn build(_: *InputPlugin, app: *App) !void {
     // Register keyboard events
-    try app.registerEvent(KeyPressed, 32);
+    // KeyPressed sends every frame while held (60 events/sec), needs larger buffer
+    try app.registerEvent(KeyPressed, 256);
     try app.registerEvent(KeyReleased, 32);
     try app.registerEvent(KeyDown, 32);
 
@@ -56,10 +57,12 @@ fn poll_keyboard(
 
                 if (is_down) {
                     new_state.setKeyDown(key);
-                    try down_writer.send(.{ .key = key });
+                    // KeyPressed: sent every frame while held (for continuous movement)
+                    try pressed_writer.send(.{ .key = key });
 
                     if (!was_down) {
-                        try pressed_writer.send(.{ .key = key });
+                        // KeyDown: sent once on initial depression
+                        try down_writer.send(.{ .key = key });
                     }
                 } else if (was_down) {
                     try released_writer.send(.{ .key = key });

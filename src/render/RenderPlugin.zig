@@ -27,7 +27,13 @@ pub fn build(self: *RenderPlugin, app: *App) !void {
 }
 
 pub const RenderResource = struct {
+    gpa: *std.heap.GeneralPurposeAllocator(.{}),
     allocator: std.mem.Allocator,
+
+    // Resource tracking for diagnostics
+    frame_count: u64 = 0,
+    upload_count: u64 = 0,
+    last_log_frame: u64 = 0,
 
     // Core Vulkan resources
     render_pass: vk.RenderPass,
@@ -52,7 +58,11 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     const dev_res = r_device.ptr orelse return error.MissingDeviceResource;
     const vkd = dev_res.device_proxy orelse return error.MissingDevice;
     const swap = r_swap.ptr orelse return error.MissingSwapchainResource;
-    const allocator = std.heap.page_allocator;
+
+    // Allocate GPA on heap so it persists
+    const gpa = try std.heap.c_allocator.create(std.heap.GeneralPurposeAllocator(.{}));
+    gpa.* = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
 
     if (r_clear.ptr == null) {
         try commands.insertResource(ClearColor{});
@@ -93,6 +103,7 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     errdefer MeshRenderer.deinit(vkd, &mesh_resources);
 
     try commands.insertResource(RenderResource{
+        .gpa = gpa,
         .allocator = allocator,
         .render_pass = render_pass,
         .framebuffers = framebuffers,
@@ -116,7 +127,7 @@ fn render_system(
     r_device: ResOpt(DeviceResource),
     r_swap: ResOpt(SwapchainResource),
     r_window_bounds: ResOpt(phasor_common.WindowBounds),
-    r_rend: ResOpt(RenderResource),
+    r_rend: ResMut(RenderResource),
     r_clear: ResOpt(ClearColor),
     q_triangles: Query(.{components.Triangle}),
     q_sprites: Query(.{ components.Sprite3D, Transform3d }),
@@ -133,12 +144,24 @@ fn render_system(
     const gfx_q = dev_res.graphics_queue.?;
     const present_q = dev_res.present_queue.?;
     const swap = r_swap.ptr orelse return;
-    const rr = r_rend.ptr orelse return;
+    const rr = r_rend.ptr;
     const clear_color = if (r_clear.ptr) |cc| cc.* else ClearColor{};
 
     const window_bounds = r_window_bounds.ptr orelse return;
     const window_width: f32 = @floatFromInt(window_bounds.width);
     const window_height: f32 = @floatFromInt(window_bounds.height);
+
+    // Resource tracking diagnostics
+    rr.frame_count += 1;
+    if (rr.frame_count - rr.last_log_frame >= 180) { // Log every 3 seconds at 60 FPS
+        std.log.info("=== FRAME {d} === Uploads/3sec: {d} (avg {d}/frame)", .{
+            rr.frame_count,
+            rr.upload_count,
+            rr.upload_count / 180,
+        });
+        rr.last_log_frame = rr.frame_count;
+        rr.upload_count = 0;
+    }
 
     // Find camera for projection and offset
     var camera_offset = phasor_common.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
@@ -161,6 +184,7 @@ fn render_system(
         .window_height = window_height,
         .camera_offset = camera_offset,
         .allocator = rr.allocator,
+        .upload_counter = &rr.upload_count,
     };
 
     // Reset descriptor pools for this frame (before allocating new descriptor sets)
@@ -193,11 +217,11 @@ fn render_system(
     const rectangle_count = try RectangleRenderer.collect(vkd, &ctx, &rr.rectangle_resources, q_rectangles);
 
     // Collect meshes (requires camera)
-    var collected_meshes = try std.ArrayList(MeshRenderer.CollectedMesh).initCapacity(rr.allocator, 10);
+    var collected_meshes = if (camera != null and camera_transform != null)
+        try MeshRenderer.collect(vkd, &ctx, &rr.mesh_resources, q_meshes, camera.?, camera_transform.?)
+    else
+        try std.ArrayList(MeshRenderer.CollectedMesh).initCapacity(rr.allocator, 0);
     defer collected_meshes.deinit(rr.allocator);
-    if (camera != null and camera_transform != null) {
-        collected_meshes = try MeshRenderer.collect(vkd, &ctx, &rr.mesh_resources, q_meshes, camera.?, camera_transform.?);
-    }
 
     // Record command buffer
     try recordCommandBuffer(
@@ -239,8 +263,6 @@ fn render_system(
         .p_results = null,
     };
     _ = try vkd.queuePresentKHR(present_q, &present_info);
-
-    try vkd.queueWaitIdle(present_q);
 }
 
 fn recordCommandBuffer(
@@ -330,6 +352,10 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResou
                 vkd.destroyCommandPool(rr.cmd_pool, null);
             }
         }
+
+        // Deinit and free GPA
+        _ = rr.gpa.deinit();
+        std.heap.c_allocator.destroy(rr.gpa);
     }
 
     std.log.info("Vulkan RenderPlugin: deinitialized", .{});
@@ -454,6 +480,7 @@ const phasor_ecs = @import("phasor-ecs");
 const App = phasor_ecs.App;
 const Commands = phasor_ecs.Commands;
 const ResOpt = phasor_ecs.ResOpt;
+const ResMut = phasor_ecs.ResMut;
 const Query = phasor_ecs.Query;
 
 const phasor_common = @import("phasor-common");
