@@ -367,6 +367,43 @@ pub fn build(b: *std.Build) void {
     cube_step.dependOn(&run_examples_cube.step);
 
     b.installArtifact(examples_cube);
+
+    //
+    // ─── WAREHOUSE EXAMPLE ─────────────────────────────────────────
+    //
+    const examples_warehouse_mod = b.addModule("examples-warehouse", .{
+        .root_source_file = b.path("examples/warehouse/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-vulkan", .module = phasor_vulkan_mod },
+            .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
+            .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+        },
+    });
+
+    const examples_warehouse = b.addExecutable(.{
+        .name = "examples-warehouse",
+        .root_module = examples_warehouse_mod,
+    });
+
+    examples_warehouse.linkLibC();
+    examples_warehouse.linkLibrary(glfw_lib);
+    examples_warehouse.linkSystemLibrary("vulkan");
+
+    if (target.result.os.tag.isDarwin()) {
+        examples_warehouse.linkFramework("Cocoa");
+        examples_warehouse.linkFramework("IOKit");
+        examples_warehouse.linkFramework("CoreVideo");
+        examples_warehouse.linkSystemLibrary("objc");
+    }
+
+    const run_examples_warehouse = b.addRunArtifact(examples_warehouse);
+    const warehouse_step = b.step("warehouse", "Run warehouse example");
+    warehouse_step.dependOn(&run_examples_warehouse.step);
+
+    b.installArtifact(examples_warehouse);
 }
 
 const ShaderFile = struct { src: []const u8, dst: []const u8 };

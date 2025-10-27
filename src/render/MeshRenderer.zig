@@ -268,13 +268,31 @@ fn buildModelMatrix(transform: *const Transform3d) [16]f32 {
 
 fn buildViewMatrix(camera_transform: *const Transform3d) [16]f32 {
     const pos = camera_transform.translation;
+    const rot = camera_transform.rotation;
 
-    // Simple look-at matrix looking at origin from camera position
-    const eye = phasor_common.Vec3{ .x = pos.x, .y = pos.y, .z = pos.z };
-    const target = phasor_common.Vec3{ .x = 0.0, .y = 0.0, .z = 0.0 };
+    // Build view matrix from FPS camera (pitch/yaw)
+    // pitch = rotation.x, yaw = rotation.y
+    const cos_pitch = @cos(rot.x);
+    const sin_pitch = @sin(rot.x);
+    const cos_yaw = @cos(rot.y);
+    const sin_yaw = @sin(rot.y);
+
+    // Calculate forward vector from pitch and yaw
+    const forward = phasor_common.Vec3{
+        .x = sin_yaw * cos_pitch,
+        .y = sin_pitch,
+        .z = cos_yaw * cos_pitch,
+    };
+
+    const target = phasor_common.Vec3{
+        .x = pos.x + forward.x,
+        .y = pos.y + forward.y,
+        .z = pos.z + forward.z,
+    };
+
     const up = phasor_common.Vec3{ .x = 0.0, .y = 1.0, .z = 0.0 };
 
-    return lookAt(eye, target, up);
+    return lookAt(pos, target, up);
 }
 
 fn lookAt(eye: phasor_common.Vec3, center: phasor_common.Vec3, up: phasor_common.Vec3) [16]f32 {
@@ -309,15 +327,17 @@ fn buildProjectionMatrix(camera: *const components.Camera3d, ctx: *RenderContext
 }
 
 fn perspective(fov: f32, aspect: f32, near: f32, far: f32) [16]f32 {
+    _ = far; // unused with reverse-Z
     const tan_half_fov = @tan(fov / 2.0);
     const f = 1.0 / tan_half_fov;
 
-    // Column-major perspective matrix (Vulkan/GLM style)
+    // Column-major perspective matrix for Vulkan
+    // Using reverse-Z: near=1.0, far=0.0 for better precision
     return [16]f32{
-        f / aspect, 0.0, 0.0,                              0.0,  // column 0
-        0.0,        f,   0.0,                              0.0,  // column 1
-        0.0,        0.0, -(far + near) / (far - near),    -1.0, // column 2
-        0.0,        0.0, -(2.0 * far * near) / (far - near), 0.0,  // column 3
+        f / aspect, 0.0, 0.0,  0.0,  // column 0
+        0.0,        -f,  0.0,  0.0,  // column 1 (flip Y for Vulkan)
+        0.0,        0.0, 0.0,  -1.0, // column 2 (reverse-Z)
+        0.0,        0.0, near, 0.0,  // column 3
     };
 }
 
@@ -446,7 +466,7 @@ fn createPipeline(
         .rasterizer_discard_enable = .false,
         .polygon_mode = .fill,
         .cull_mode = .{ .back_bit = true },
-        .front_face = .clockwise,
+        .front_face = .counter_clockwise,
         .depth_bias_enable = .false,
         .depth_bias_constant_factor = 0.0,
         .depth_bias_clamp = 0.0,
@@ -464,9 +484,9 @@ fn createPipeline(
     };
 
     const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
-        .blend_enable = .true,
-        .src_color_blend_factor = .src_alpha,
-        .dst_color_blend_factor = .one_minus_src_alpha,
+        .blend_enable = .false,
+        .src_color_blend_factor = .one,
+        .dst_color_blend_factor = .zero,
         .color_blend_op = .add,
         .src_alpha_blend_factor = .one,
         .dst_alpha_blend_factor = .zero,
@@ -485,7 +505,7 @@ fn createPipeline(
     const depth_stencil = vk.PipelineDepthStencilStateCreateInfo{
         .depth_test_enable = .true,
         .depth_write_enable = .true,
-        .depth_compare_op = .less,
+        .depth_compare_op = .greater,
         .depth_bounds_test_enable = .false,
         .min_depth_bounds = 0.0,
         .max_depth_bounds = 1.0,

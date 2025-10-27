@@ -1,0 +1,7 @@
+# This is to avoid bloating the repository with large 3D model files
+# At this stage of development, and before we have attribution sorted out.
+*.zip
+*.glb
+*.gltf
+*.fbx
+*.obj

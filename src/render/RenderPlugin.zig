@@ -301,16 +301,17 @@ fn recordCommandBuffer(
     vkd.cmdSetScissor(cmdbuf, 0, 1, @ptrCast(&scissor));
 
     const clear_f32 = phasor_common.Color.F32.fromColor(clear_color.color);
-    const clear_value = vk.ClearValue{
-        .color = .{ .float_32 = .{ clear_f32.r, clear_f32.g, clear_f32.b, clear_f32.a } },
+    const clear_values = [_]vk.ClearValue{
+        .{ .color = .{ .float_32 = .{ clear_f32.r, clear_f32.g, clear_f32.b, clear_f32.a } } },
+        .{ .depth_stencil = .{ .depth = 0.0, .stencil = 0 } }, // reverse-Z: clear to 0
     };
 
     vkd.cmdBeginRenderPass(cmdbuf, &.{
         .render_pass = rr.render_pass,
         .framebuffer = rr.framebuffers[img_idx],
         .render_area = .{ .offset = .{ .x = 0, .y = 0 }, .extent = swap.extent },
-        .clear_value_count = 1,
-        .p_clear_values = @ptrCast(&clear_value),
+        .clear_value_count = clear_values.len,
+        .p_clear_values = &clear_values,
     }, .@"inline");
 
     // Record draw calls for each shape type
@@ -413,17 +414,32 @@ fn createRenderPass(vkd: anytype, format: vk.Format) !vk.RenderPass {
         .final_layout = .present_src_khr,
     };
 
+    const depth_attachment = vk.AttachmentDescription{
+        .format = .d32_sfloat,
+        .samples = .{ .@"1_bit" = true },
+        .load_op = .clear,
+        .store_op = .dont_care,
+        .stencil_load_op = .dont_care,
+        .stencil_store_op = .dont_care,
+        .initial_layout = .undefined,
+        .final_layout = .depth_stencil_attachment_optimal,
+    };
+
+    const attachments = [_]vk.AttachmentDescription{ color_attachment, depth_attachment };
+
     const color_ref = vk.AttachmentReference{ .attachment = 0, .layout = .color_attachment_optimal };
+    const depth_ref = vk.AttachmentReference{ .attachment = 1, .layout = .depth_stencil_attachment_optimal };
 
     const subpass = vk.SubpassDescription{
         .pipeline_bind_point = .graphics,
         .color_attachment_count = 1,
         .p_color_attachments = @ptrCast(&color_ref),
+        .p_depth_stencil_attachment = &depth_ref,
     };
 
     return try vkd.createRenderPass(&.{
-        .attachment_count = 1,
-        .p_attachments = @ptrCast(&color_attachment),
+        .attachment_count = attachments.len,
+        .p_attachments = &attachments,
         .subpass_count = 1,
         .p_subpasses = @ptrCast(&subpass),
     }, null);
@@ -437,10 +453,11 @@ fn createFramebuffers(allocator: std.mem.Allocator, vkd: anytype, render_pass: v
     errdefer for (framebuffers[0..i]) |fb| vkd.destroyFramebuffer(fb, null);
 
     for (framebuffers, 0..) |*fb, idx| {
+        const attachments = [_]vk.ImageView{ swap.views[idx], swap.depth_image_view.? };
         fb.* = try vkd.createFramebuffer(&.{
             .render_pass = render_pass,
-            .attachment_count = 1,
-            .p_attachments = @ptrCast(&swap.views[idx]),
+            .attachment_count = attachments.len,
+            .p_attachments = &attachments,
             .width = swap.extent.width,
             .height = swap.extent.height,
             .layers = 1,

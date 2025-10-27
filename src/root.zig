@@ -1,5 +1,7 @@
 pub const VulkanPlugin = @import("VulkanPlugin.zig");
 pub const TimePlugin = @import("TimePlugin.zig");
+pub const FpsControllerPlugin = @import("FpsControllerPlugin.zig");
+pub const PhysicsPlugin = @import("PhysicsPlugin.zig");
 // Optional exports if needed externally
 pub const InstancePlugin = @import("instance/InstancePlugin.zig");
 pub const DevicePlugin = @import("device/DevicePlugin.zig");
@@ -33,8 +35,19 @@ pub const Circle = components.Circle;
 pub const Rectangle = components.Rectangle;
 pub const Mesh = components.Mesh;
 pub const MeshVertex = components.MeshVertex;
+pub const MeshNode = components.MeshNode;
 pub const Material = components.Material;
 pub const OrbitCamera = components.OrbitCamera;
+
+// Export FPS controller components
+const fps_controller = @import("FpsControllerPlugin.zig");
+pub const FpsController = fps_controller.FpsController;
+
+// Export physics components
+const physics = @import("PhysicsPlugin.zig");
+pub const RigidBody = physics.RigidBody;
+pub const BoxCollider = physics.BoxCollider;
+pub const CapsuleCollider = physics.CapsuleCollider;
 
 // Export time resources
 const time_plugin = @import("TimePlugin.zig");

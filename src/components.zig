@@ -229,6 +229,18 @@ pub const Mesh = struct {
     pub const __trait__ = Renderable;
 };
 
+/// MeshNode component for hierarchical mesh structures (e.g., GLTF scenes)
+/// This allows a mesh to be part of a scene graph with parent-child relationships
+pub const MeshNode = struct {
+    /// Optional name for this node (useful for debugging and identification)
+    name: ?[]const u8 = null,
+    /// Parent entity ID (if this is a child node)
+    parent: ?u64 = null,
+    /// Local transform relative to parent (if parent exists)
+    /// If no parent, this is the world transform
+    local_transform: Transform3d = .{},
+};
+
 /// Vertex data for 3D mesh rendering
 pub const MeshVertex = extern struct {
     /// Position in 3D space
