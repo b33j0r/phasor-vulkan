@@ -2,8 +2,11 @@
 
 layout(location = 0) in vec4 fragColor;
 layout(location = 1) in vec3 fragNormal;
+layout(location = 2) in vec2 fragUV;
 
 layout(location = 0) out vec4 outColor;
+
+layout(set = 0, binding = 0) uniform sampler2D texSampler;
 
 void main() {
     // Simple directional lighting
@@ -15,5 +18,9 @@ void main() {
     float ambient = 0.4;
     float lighting = ambient + (1.0 - ambient) * diff;
 
-    outColor = vec4(fragColor.rgb * lighting, fragColor.a);
+    // Sample texture and multiply with vertex color
+    vec4 texColor = texture(texSampler, fragUV);
+    vec3 baseColor = texColor.rgb * fragColor.rgb;
+
+    outColor = vec4(baseColor * lighting, texColor.a * fragColor.a);
 }

@@ -21,6 +21,8 @@ pub const MeshResources = struct {
     index_memory: vk.DeviceMemory,
     max_vertices: u32,
     max_indices: u32,
+    descriptor_set_layout: vk.DescriptorSetLayout,
+    descriptor_pool: vk.DescriptorPool,
 };
 
 pub fn init(
@@ -32,6 +34,35 @@ pub fn init(
 ) !MeshResources {
     _ = allocator;
 
+    // Create descriptor set layout for texture sampling
+    const sampler_binding = vk.DescriptorSetLayoutBinding{
+        .binding = 0,
+        .descriptor_type = .combined_image_sampler,
+        .descriptor_count = 1,
+        .stage_flags = .{ .fragment_bit = true },
+        .p_immutable_samplers = null,
+    };
+
+    const descriptor_set_layout = try vkd.createDescriptorSetLayout(&.{
+        .binding_count = 1,
+        .p_bindings = @ptrCast(&sampler_binding),
+    }, null);
+    errdefer vkd.destroyDescriptorSetLayout(descriptor_set_layout, null);
+
+    // Create descriptor pool
+    const pool_size = vk.DescriptorPoolSize{
+        .type = .combined_image_sampler,
+        .descriptor_count = 100,
+    };
+
+    const descriptor_pool = try vkd.createDescriptorPool(&.{
+        .flags = .{},
+        .pool_size_count = 1,
+        .p_pool_sizes = @ptrCast(&pool_size),
+        .max_sets = 100,
+    }, null);
+    errdefer vkd.destroyDescriptorPool(descriptor_pool, null);
+
     // Create push constant range for MVP matrix
     const push_constant_range = vk.PushConstantRange{
         .stage_flags = .{ .vertex_bit = true },
@@ -41,8 +72,8 @@ pub fn init(
 
     const pipeline_layout = try vkd.createPipelineLayout(&.{
         .flags = .{},
-        .set_layout_count = 0,
-        .p_set_layouts = undefined,
+        .set_layout_count = 1,
+        .p_set_layouts = @ptrCast(&descriptor_set_layout),
         .push_constant_range_count = 1,
         .p_push_constant_ranges = @ptrCast(&push_constant_range),
     }, null);
@@ -102,6 +133,8 @@ pub fn init(
         .index_memory = index_memory,
         .max_vertices = max_vertices,
         .max_indices = max_indices,
+        .descriptor_set_layout = descriptor_set_layout,
+        .descriptor_pool = descriptor_pool,
     };
 }
 
@@ -112,12 +145,17 @@ pub fn deinit(vkd: anytype, resources: *const MeshResources) void {
     vkd.freeMemory(resources.vertex_memory, null);
     vkd.destroyPipeline(resources.pipeline, null);
     vkd.destroyPipelineLayout(resources.pipeline_layout, null);
+    vkd.destroyDescriptorPool(resources.descriptor_pool, null);
+    vkd.destroyDescriptorSetLayout(resources.descriptor_set_layout, null);
 }
+
+const assets = @import("../assets.zig");
 
 pub const CollectedMesh = struct {
     vertex_count: u32,
     index_count: u32,
     mvp_matrix: [16]f32,
+    texture: ?*const assets.Texture,
 };
 
 pub fn collect(
@@ -163,6 +201,7 @@ pub fn collect(
                 try all_vertices.append(ctx.allocator, .{
                     .pos = vertex.pos,
                     .normal = vertex.normal,
+                    .uv = vertex.uv,
                     .color = .{
                         .r = vertex.color.r * material.color.r,
                         .g = vertex.color.g * material.color.g,
@@ -181,6 +220,7 @@ pub fn collect(
                 .vertex_count = @intCast(mesh.vertices.len),
                 .index_count = @intCast(mesh.indices.len),
                 .mvp_matrix = mvp_matrix,
+                .texture = material.texture,
             });
         }
     }
@@ -215,6 +255,42 @@ pub fn record(
 
     var index_offset: u32 = 0;
     for (meshes) |mesh| {
+        // Bind texture if available
+        if (mesh.texture) |texture| {
+            if (texture.image_view != null and texture.sampler != null) {
+                // Create and bind descriptor set for this texture
+                var descriptor_set: vk.DescriptorSet = undefined;
+                vkd.allocateDescriptorSets(&.{
+                    .descriptor_pool = resources.descriptor_pool,
+                    .descriptor_set_count = 1,
+                    .p_set_layouts = @ptrCast(&resources.descriptor_set_layout),
+                }, @ptrCast(&descriptor_set)) catch {
+                    index_offset += mesh.index_count;
+                    continue;
+                };
+
+                const image_info = vk.DescriptorImageInfo{
+                    .sampler = texture.sampler.?,
+                    .image_view = texture.image_view.?,
+                    .image_layout = .shader_read_only_optimal,
+                };
+
+                const write_descriptor = vk.WriteDescriptorSet{
+                    .dst_set = descriptor_set,
+                    .dst_binding = 0,
+                    .dst_array_element = 0,
+                    .descriptor_count = 1,
+                    .descriptor_type = .combined_image_sampler,
+                    .p_image_info = @ptrCast(&image_info),
+                    .p_buffer_info = undefined,
+                    .p_texel_buffer_view = undefined,
+                };
+
+                vkd.updateDescriptorSets(1, @ptrCast(&write_descriptor), 0, undefined);
+                vkd.cmdBindDescriptorSets(cmdbuf, .graphics, resources.pipeline_layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
+            }
+        }
+
         // Push MVP matrix
         vkd.cmdPushConstants(
             cmdbuf,
@@ -425,7 +501,8 @@ fn createPipeline(
     const vertex_attributes = [_]vk.VertexInputAttributeDescription{
         .{ .binding = 0, .location = 0, .format = .r32g32b32_sfloat, .offset = @offsetOf(components.MeshVertex, "pos") },
         .{ .binding = 0, .location = 1, .format = .r32g32b32_sfloat, .offset = @offsetOf(components.MeshVertex, "normal") },
-        .{ .binding = 0, .location = 2, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(components.MeshVertex, "color") },
+        .{ .binding = 0, .location = 2, .format = .r32g32_sfloat, .offset = @offsetOf(components.MeshVertex, "uv") },
+        .{ .binding = 0, .location = 3, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(components.MeshVertex, "color") },
     };
 
     const vertex_input = vk.PipelineVertexInputStateCreateInfo{

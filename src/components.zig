@@ -247,6 +247,8 @@ pub const MeshVertex = extern struct {
     pos: phasor_common.Vec3,
     /// Normal vector
     normal: phasor_common.Vec3,
+    /// Texture coordinates
+    uv: phasor_common.Vec2 = .{ .x = 0.0, .y = 0.0 },
     /// Vertex color
     color: Color4,
 };
@@ -255,6 +257,8 @@ pub const MeshVertex = extern struct {
 pub const Material = struct {
     /// Base color/tint
     color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+    /// Optional texture
+    texture: ?*const assets.Texture = null,
 };
 
 /// Orbit camera controller component

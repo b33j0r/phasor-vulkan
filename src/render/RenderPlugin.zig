@@ -191,6 +191,7 @@ fn render_system(
     if (rr.sprite_resources.descriptor_pool) |pool| {
         try vkd.resetDescriptorPool(pool, .{});
     }
+    try vkd.resetDescriptorPool(rr.mesh_resources.descriptor_pool, .{});
 
     // Acquire swapchain image
     const next_image_sem = rr.image_available[0];

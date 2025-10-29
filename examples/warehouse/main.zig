@@ -5,6 +5,25 @@ const phasor_vulkan = @import("phasor-vulkan");
 const phasor_common = @import("phasor-common");
 
 // ============================================================================
+// Assets Definition
+// ============================================================================
+
+const GameAssets = struct {
+    floor_texture: phasor_vulkan.Texture = .{
+        .path = "examples/warehouse/assets/kenney_prototype-textures/PNG/Light/texture_01.png",
+    },
+    wall_texture: phasor_vulkan.Texture = .{
+        .path = "examples/warehouse/assets/kenney_prototype-textures/PNG/Light/texture_07.png",
+    },
+    crate_texture: phasor_vulkan.Texture = .{
+        .path = "examples/warehouse/assets/kenney_prototype-textures/PNG/Orange/texture_01.png",
+    },
+    platform_texture: phasor_vulkan.Texture = .{
+        .path = "examples/warehouse/assets/kenney_prototype-textures/PNG/Dark/texture_01.png",
+    },
+};
+
+// ============================================================================
 // Mesh Creation Helpers
 // ============================================================================
 
@@ -29,17 +48,15 @@ fn createFloorMesh(allocator: std.mem.Allocator, width: f32, depth: f32) !phasor
             const px = -half_w + @as(f32, @floatFromInt(x)) * tile_size;
             const pz = -half_d + @as(f32, @floatFromInt(z)) * tile_size;
 
-            // Checkerboard pattern
-            const is_light = ((x + z) % 2) == 0;
-            const color = if (is_light)
-                phasor_vulkan.Color4{ .r = 0.7, .g = 0.7, .b = 0.75, .a = 1.0 }
-            else
-                phasor_vulkan.Color4{ .r = 0.3, .g = 0.3, .b = 0.35, .a = 1.0 };
+            // UV coordinates for tiling
+            const u = @as(f32, @floatFromInt(x));
+            const v = @as(f32, @floatFromInt(z));
 
             vertices[idx] = .{
                 .pos = .{ .x = px, .y = 0.0, .z = pz },
                 .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 },
-                .color = color,
+                .uv = .{ .x = u, .y = v },
+                .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
             };
             idx += 1;
         }
@@ -77,11 +94,14 @@ fn createWallMesh(allocator: std.mem.Allocator, width: f32, height: f32) !phasor
     const half_w = width / 2.0;
     const half_h = height / 2.0;
 
+    const u_scale = width / 2.0;
+    const v_scale = height / 2.0;
+
     // Wall vertices (facing +Z direction)
-    vertices[0] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = .{ .r = 0.4, .g = 0.35, .b = 0.3, .a = 1.0 } };
-    vertices[1] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = .{ .r = 0.4, .g = 0.35, .b = 0.3, .a = 1.0 } };
-    vertices[2] = .{ .pos = .{ .x = half_w, .y = half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = .{ .r = 0.4, .g = 0.35, .b = 0.3, .a = 1.0 } };
-    vertices[3] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = .{ .r = 0.4, .g = 0.35, .b = 0.3, .a = 1.0 } };
+    vertices[0] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = 0.0, .y = v_scale }, .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 } };
+    vertices[1] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = u_scale, .y = v_scale }, .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 } };
+    vertices[2] = .{ .pos = .{ .x = half_w, .y = half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = u_scale, .y = 0.0 }, .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 } };
+    vertices[3] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = 0.0 }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 } };
 
     const indices = try allocator.alloc(u32, 6);
     indices[0] = 0;
@@ -94,47 +114,49 @@ fn createWallMesh(allocator: std.mem.Allocator, width: f32, height: f32) !phasor
     return phasor_vulkan.Mesh{ .vertices = vertices, .indices = indices };
 }
 
-fn createBoxMesh(allocator: std.mem.Allocator, width: f32, height: f32, depth: f32, color: phasor_vulkan.Color4) !phasor_vulkan.Mesh {
+fn createBoxMesh(allocator: std.mem.Allocator, width: f32, height: f32, depth: f32) !phasor_vulkan.Mesh {
     const vertices = try allocator.alloc(phasor_vulkan.MeshVertex, 24);
     const half_w = width / 2.0;
     const half_h = height / 2.0;
     const half_d = depth / 2.0;
 
+    const color = phasor_vulkan.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+
     // Front face (+Z)
-    vertices[0] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = color };
-    vertices[1] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = color };
-    vertices[2] = .{ .pos = .{ .x = half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = color };
-    vertices[3] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .color = color };
+    vertices[0] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[1] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[2] = .{ .pos = .{ .x = half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[3] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = 1.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
     // Back face (-Z)
-    vertices[4] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .color = color };
-    vertices[5] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .color = color };
-    vertices[6] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .color = color };
-    vertices[7] = .{ .pos = .{ .x = half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .color = color };
+    vertices[4] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[5] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[6] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[7] = .{ .pos = .{ .x = half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
     // Top face (+Y)
-    vertices[8] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .color = color };
-    vertices[9] = .{ .pos = .{ .x = half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .color = color };
-    vertices[10] = .{ .pos = .{ .x = half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .color = color };
-    vertices[11] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .color = color };
+    vertices[8] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
+    vertices[9] = .{ .pos = .{ .x = half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[10] = .{ .pos = .{ .x = half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[11] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
 
     // Bottom face (-Y)
-    vertices[12] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = color };
-    vertices[13] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = color };
-    vertices[14] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = color };
-    vertices[15] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = color };
+    vertices[12] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[13] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[14] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[15] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
     // Right face (+X)
-    vertices[16] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = color };
-    vertices[17] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = color };
-    vertices[18] = .{ .pos = .{ .x = half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = color };
-    vertices[19] = .{ .pos = .{ .x = half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = color };
+    vertices[16] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[17] = .{ .pos = .{ .x = half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[18] = .{ .pos = .{ .x = half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[19] = .{ .pos = .{ .x = half_w, .y = half_h, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
     // Left face (-X)
-    vertices[20] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = color };
-    vertices[21] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = color };
-    vertices[22] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = color };
-    vertices[23] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = color };
+    vertices[20] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[21] = .{ .pos = .{ .x = -half_w, .y = -half_h, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[22] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[23] = .{ .pos = .{ .x = -half_w, .y = half_h, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
     const indices = try allocator.alloc(u32, 36);
     const faces = [6][6]u32{
@@ -158,67 +180,73 @@ fn createBoxMesh(allocator: std.mem.Allocator, width: f32, height: f32, depth: f
 }
 
 fn createRampMesh(allocator: std.mem.Allocator, width: f32, height: f32, depth: f32) !phasor_vulkan.Mesh {
-    const vertices = try allocator.alloc(phasor_vulkan.MeshVertex, 14);
+    // Create a wedge ramp by modifying a box - move the front bottom edge up to the back top
+    const vertices = try allocator.alloc(phasor_vulkan.MeshVertex, 24);
     const half_w = width / 2.0;
     const half_d = depth / 2.0;
 
-    const ramp_color = phasor_vulkan.Color4{ .r = 0.35, .g = 0.4, .b = 0.35, .a = 1.0 };
+    const color = phasor_vulkan.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
 
-    // Ramp top (sloped surface)
+    // Calculate normal for sloped surface
+    const slope_len = @sqrt(depth * depth + height * height);
     const nx: f32 = 0.0;
-    const ny: f32 = @sqrt(depth * depth / (depth * depth + height * height));
-    const nz: f32 = -@sqrt(height * height / (depth * depth + height * height));
+    const ny: f32 = depth / slope_len;
+    const nz: f32 = height / slope_len;
 
-    vertices[0] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .color = ramp_color };
-    vertices[1] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .color = ramp_color };
-    vertices[2] = .{ .pos = .{ .x = half_w, .y = height, .z = -half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .color = ramp_color };
-    vertices[3] = .{ .pos = .{ .x = -half_w, .y = height, .z = -half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .color = ramp_color };
+    // Front face (+Z) - this becomes the sloped ramp surface
+    // Bottom edge at y=0, top edge at y=height
+    vertices[0] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[1] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[2] = .{ .pos = .{ .x = half_w, .y = height, .z = -half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[3] = .{ .pos = .{ .x = -half_w, .y = height, .z = -half_d }, .normal = .{ .x = nx, .y = ny, .z = nz }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
-    // Bottom
-    vertices[4] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = ramp_color };
-    vertices[5] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = ramp_color };
-    vertices[6] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = ramp_color };
-    vertices[7] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .color = ramp_color };
+    // Back face (-Z) - vertical wall at the high end
+    vertices[4] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[5] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[6] = .{ .pos = .{ .x = -half_w, .y = height, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[7] = .{ .pos = .{ .x = half_w, .y = height, .z = -half_d }, .normal = .{ .x = 0.0, .y = 0.0, .z = -1.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
-    // Sides and back
-    vertices[8] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = ramp_color };
-    vertices[9] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = ramp_color };
-    vertices[10] = .{ .pos = .{ .x = -half_w, .y = height, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .color = ramp_color };
+    // Top face - this is eliminated in a wedge, vertices unused
+    vertices[8] = .{ .pos = .{ .x = -half_w, .y = height, .z = half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
+    vertices[9] = .{ .pos = .{ .x = half_w, .y = height, .z = half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[10] = .{ .pos = .{ .x = half_w, .y = height, .z = -half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[11] = .{ .pos = .{ .x = -half_w, .y = height, .z = -half_d }, .normal = .{ .x = 0.0, .y = 1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
 
-    vertices[11] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = ramp_color };
-    vertices[12] = .{ .pos = .{ .x = half_w, .y = height, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = ramp_color };
-    vertices[13] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .color = ramp_color };
+    // Bottom face (-Y)
+    vertices[12] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[13] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[14] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[15] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = 0.0, .y = -1.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
 
-    const indices = try allocator.alloc(u32, 24);
-    // Top surface
-    indices[0] = 0;
-    indices[1] = 1;
-    indices[2] = 2;
-    indices[3] = 2;
-    indices[4] = 3;
-    indices[5] = 0;
-    // Bottom
-    indices[6] = 4;
-    indices[7] = 5;
-    indices[8] = 6;
-    indices[9] = 6;
-    indices[10] = 7;
-    indices[11] = 4;
-    // Left side
-    indices[12] = 8;
-    indices[13] = 9;
-    indices[14] = 10;
-    // Right side
-    indices[15] = 11;
-    indices[16] = 12;
-    indices[17] = 13;
-    // Back (top edge)
-    indices[18] = 3;
-    indices[19] = 2;
-    indices[20] = 12;
-    indices[21] = 12;
-    indices[22] = 10;
-    indices[23] = 3;
+    // Right face (+X) - triangular side
+    vertices[16] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[17] = .{ .pos = .{ .x = half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[18] = .{ .pos = .{ .x = half_w, .y = height, .z = -half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[19] = .{ .pos = .{ .x = half_w, .y = height, .z = half_d }, .normal = .{ .x = 1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
+
+    // Left face (-X) - triangular side
+    vertices[20] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color };
+    vertices[21] = .{ .pos = .{ .x = -half_w, .y = 0.0, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 1.0 }, .color = color };
+    vertices[22] = .{ .pos = .{ .x = -half_w, .y = height, .z = half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color };
+    vertices[23] = .{ .pos = .{ .x = -half_w, .y = height, .z = -half_d }, .normal = .{ .x = -1.0, .y = 0.0, .z = 0.0 }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color };
+
+    const indices = try allocator.alloc(u32, 30);
+    const faces = [_]u32{
+        // Sloped surface (front -> ramp)
+        0,  1,  2,  2,  3,  0,
+        // Back face
+        4,  5,  6,  6,  7,  4,
+        // Bottom
+        12, 13, 14, 14, 15, 12,
+        // Right side (triangle)
+        16, 17, 18,
+        // Left side (triangle)
+        20, 21, 22, 22, 23, 20,
+    };
+
+    for (faces, 0..) |face_idx, i| {
+        indices[i] = face_idx;
+    }
 
     return phasor_vulkan.Mesh{ .vertices = vertices, .indices = indices };
 }
@@ -264,11 +292,14 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     const arena_height: f32 = 5.0;
     const wall_thickness: f32 = 0.5;
 
+    // Get assets
+    const assets = mut_commands.getResource(GameAssets) orelse return error.MissingAssets;
+
     // Create floor
     const floor_mesh = try createFloorMesh(allocator, arena_width, arena_depth);
     _ = try mut_commands.createEntity(.{
         floor_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.floor_texture },
         phasor_vulkan.Transform3d{},
         phasor_vulkan.BoxCollider{
             .half_extents = .{ .x = arena_width / 2.0, .y = 0.1, .z = arena_depth / 2.0 },
@@ -281,7 +312,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     // North wall (-Z)
     _ = try mut_commands.createEntity(.{
         wall_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.wall_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = 0.0, .y = arena_height / 2.0, .z = -arena_depth / 2.0 },
         },
@@ -293,7 +324,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     // South wall (+Z)
     _ = try mut_commands.createEntity(.{
         wall_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.wall_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = 0.0, .y = arena_height / 2.0, .z = arena_depth / 2.0 },
             .rotation = .{ .x = 0.0, .y = std.math.pi, .z = 0.0 },
@@ -307,7 +338,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     const wall_mesh_ew = try createWallMesh(allocator, arena_depth, arena_height);
     _ = try mut_commands.createEntity(.{
         wall_mesh_ew,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.wall_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = arena_width / 2.0, .y = arena_height / 2.0, .z = 0.0 },
             .rotation = .{ .x = 0.0, .y = std.math.pi / 2.0, .z = 0.0 },
@@ -320,7 +351,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     // West wall (-X)
     _ = try mut_commands.createEntity(.{
         wall_mesh_ew,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.wall_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = -arena_width / 2.0, .y = arena_height / 2.0, .z = 0.0 },
             .rotation = .{ .x = 0.0, .y = -std.math.pi / 2.0, .z = 0.0 },
@@ -334,7 +365,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     const ramp_mesh = try createRampMesh(allocator, 4.0, 2.0, 4.0);
     _ = try mut_commands.createEntity(.{
         ramp_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.platform_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = -5.0, .y = 0.0, .z = -5.0 },
         },
@@ -344,10 +375,10 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     });
 
     // Create platform at top of ramp
-    const platform_mesh = try createBoxMesh(allocator, 4.0, 0.3, 4.0, .{ .r = 0.45, .g = 0.4, .b = 0.35, .a = 1.0 });
+    const platform_mesh = try createBoxMesh(allocator, 4.0, 0.3, 4.0);
     _ = try mut_commands.createEntity(.{
         platform_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.platform_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = -5.0, .y = 2.15, .z = -7.0 },
         },
@@ -357,11 +388,11 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     });
 
     // Create some crates for visual interest
-    const crate_mesh = try createBoxMesh(allocator, 1.5, 1.5, 1.5, .{ .r = 0.6, .g = 0.45, .b = 0.3, .a = 1.0 });
+    const crate_mesh = try createBoxMesh(allocator, 1.5, 1.5, 1.5);
 
     _ = try mut_commands.createEntity(.{
         crate_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.crate_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = 5.0, .y = 0.75, .z = 5.0 },
         },
@@ -372,7 +403,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
 
     _ = try mut_commands.createEntity(.{
         crate_mesh,
-        phasor_vulkan.Material{},
+        phasor_vulkan.Material{ .texture = &assets.crate_texture },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = 7.0, .y = 0.75, .z = 3.0 },
         },
@@ -407,6 +438,9 @@ pub fn main() !u8 {
 
     var time_plugin = phasor_vulkan.TimePlugin{};
     try app.addPlugin(&time_plugin);
+
+    var asset_plugin = phasor_vulkan.AssetPlugin(GameAssets){};
+    try app.addPlugin(&asset_plugin);
 
     const fps_controller_plugin = phasor_vulkan.FpsControllerPlugin{};
     try app.addPlugin(&fps_controller_plugin);
