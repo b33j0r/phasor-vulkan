@@ -60,3 +60,8 @@ pub const ElapsedTime = time_plugin.ElapsedTime;
 const parent_plugin = @import("ParentPlugin.zig");
 pub const Parent = parent_plugin.Parent;
 pub const LocalTransform3d = parent_plugin.LocalTransform3d;
+
+// Export GLTF module
+pub const gltf = @import("gltf/root.zig");
+pub const GltfAsset = gltf.GltfAsset;
+pub const GltfScene = gltf.GltfScene;

@@ -404,6 +404,43 @@ pub fn build(b: *std.Build) void {
     warehouse_step.dependOn(&run_examples_warehouse.step);
 
     b.installArtifact(examples_warehouse);
+
+    //
+    // ─── SPONZA EXAMPLE ────────────────────────────────────────────
+    //
+    const examples_sponza_mod = b.addModule("examples-sponza", .{
+        .root_source_file = b.path("examples/sponza/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-vulkan", .module = phasor_vulkan_mod },
+            .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
+            .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+        },
+    });
+
+    const examples_sponza = b.addExecutable(.{
+        .name = "examples-sponza",
+        .root_module = examples_sponza_mod,
+    });
+
+    examples_sponza.linkLibC();
+    examples_sponza.linkLibrary(glfw_lib);
+    examples_sponza.linkSystemLibrary("vulkan");
+
+    if (target.result.os.tag.isDarwin()) {
+        examples_sponza.linkFramework("Cocoa");
+        examples_sponza.linkFramework("IOKit");
+        examples_sponza.linkFramework("CoreVideo");
+        examples_sponza.linkSystemLibrary("objc");
+    }
+
+    const run_examples_sponza = b.addRunArtifact(examples_sponza);
+    const sponza_step = b.step("sponza", "Run sponza example");
+    sponza_step.dependOn(&run_examples_sponza.step);
+
+    b.installArtifact(examples_sponza);
 }
 
 const ShaderFile = struct { src: []const u8, dst: []const u8 };
