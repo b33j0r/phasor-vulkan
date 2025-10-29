@@ -586,17 +586,12 @@ fn createRampMesh(allocator: std.mem.Allocator, width: f32, height: f32, depth: 
 fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     const allocator = std.heap.page_allocator;
 
-    // Create FPS camera with perspective projection
-    _ = try mut_commands.createEntity(.{
-        phasor_vulkan.Camera3d{
-            .Perspective = .{
-                .fov = std.math.pi / 3.0,
-                .near = 0.1,
-                .far = 1000.0,
-            },
-        },
+    // Create FPS player body (yaw control, physics)
+    // Human scale: ~1.7m tall, eyes at ~1.6m
+    // Capsule collider is centered at its position, so place body at half-height + radius
+    const player_body = try mut_commands.createEntity(.{
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = 0.0, .y = 3.0, .z = 5.0 },
+            .translation = .{ .x = 0.0, .y = 1.15, .z = 5.0 }, // 0.85 (half height) + 0.3 (radius)
             .rotation = .{ .x = 0.0, .y = std.math.pi, .z = 0.0 },
         },
         phasor_vulkan.FpsController{
@@ -605,13 +600,30 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
             .yaw = std.math.pi,
         },
         phasor_vulkan.CapsuleCollider{
-            .radius = 0.4,
-            .height = 3.6,
+            .radius = 0.3,
+            .height = 1.7,
         },
         phasor_vulkan.RigidBody{
             .gravity_scale = 1.0,
             .kinematic = false,
         },
+    });
+
+    // Create camera head as child (pitch control)
+    _ = try mut_commands.createEntity(.{
+        phasor_vulkan.Camera3d{
+            .Perspective = .{
+                .fov = std.math.pi / 3.0,
+                .near = 0.1,
+                .far = 1000.0,
+            },
+        },
+        phasor_vulkan.Transform3d{}, // Will be computed from parent + local
+        phasor_vulkan.LocalTransform3d{
+            .translation = .{ .x = 0.0, .y = 0.45, .z = 0.0 }, // Eye height relative to body center (1.6 - 1.15)
+        },
+        phasor_vulkan.Parent{ .id = player_body },
+        phasor_vulkan.FpsCameraHead{},
     });
 
     // Arena dimensions
@@ -783,14 +795,37 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         },
     });
 
-    // Create capsule primitive (purple texture)
-    const capsule_mesh = try createCapsuleMesh(allocator, 0.5, 1.5, 16, 8);
-    _ = try mut_commands.createEntity(.{
-        capsule_mesh,
-        phasor_vulkan.Material{ .texture = &assets.purple_texture },
+    // Create human scale reference using parent-child hierarchy
+    // Root body entity at ground level
+    const reference_body = try mut_commands.createEntity(.{
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = 7.0, .y = 1.5, .z = -5.0 },
+            .translation = .{ .x = 7.0, .y = 0.0, .z = -5.0 },
         },
+    });
+
+    // Body capsule (1.7m tall, 0.3m radius) as child
+    // Capsule is centered, so offset up by (height/2 + radius) to place on ground
+    const reference_body_mesh = try createCapsuleMesh(allocator, 0.3, 1.7, 16, 8);
+    _ = try mut_commands.createEntity(.{
+        reference_body_mesh,
+        phasor_vulkan.Material{ .texture = &assets.purple_texture },
+        phasor_vulkan.Transform3d{}, // Computed from parent + local
+        phasor_vulkan.LocalTransform3d{
+            .translation = .{ .x = 0.0, .y = 1.15, .z = 0.0 },
+        },
+        phasor_vulkan.Parent{ .id = reference_body },
+    });
+
+    // Create head (0.25m cube) at eye level (1.6m from ground) as child
+    const head_mesh = try createBoxMesh(allocator, 0.25, 0.25, 0.25);
+    _ = try mut_commands.createEntity(.{
+        head_mesh,
+        phasor_vulkan.Material{ .texture = &assets.purple_texture },
+        phasor_vulkan.Transform3d{}, // Computed from parent + local
+        phasor_vulkan.LocalTransform3d{
+            .translation = .{ .x = 0.0, .y = 1.6, .z = 0.0 },
+        },
+        phasor_vulkan.Parent{ .id = reference_body },
     });
 }
 
@@ -822,6 +857,9 @@ pub fn main() !u8 {
 
     var asset_plugin = phasor_vulkan.AssetPlugin(GameAssets){};
     try app.addPlugin(&asset_plugin);
+
+    const parent_plugin = phasor_vulkan.ParentPlugin{};
+    try app.addPlugin(&parent_plugin);
 
     const fps_controller_plugin = phasor_vulkan.FpsControllerPlugin{};
     try app.addPlugin(&fps_controller_plugin);

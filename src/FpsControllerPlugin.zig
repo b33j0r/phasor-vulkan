@@ -9,6 +9,8 @@ const Transform3d = components.Transform3d;
 const DeltaTime = @import("TimePlugin.zig").DeltaTime;
 const Window = phasor_glfw.WindowPlugin.Window;
 const RigidBody = @import("PhysicsPlugin.zig").RigidBody;
+const ParentPlugin = @import("ParentPlugin.zig");
+const LocalTransform3d = ParentPlugin.LocalTransform3d;
 
 /// FPS controller component for first-person camera control
 pub const FpsController = struct {
@@ -32,7 +34,13 @@ pub const FpsController = struct {
     first_mouse: bool = true,
     /// Whether player is grounded
     is_grounded: bool = false,
+    /// Entity ID of the camera head (child entity)
+    camera_head_id: ?phasor_ecs.Entity.Id = null,
 };
+
+/// Marker component for the FPS camera head
+/// This entity should be a child of the FpsController entity
+pub const FpsCameraHead = struct {};
 
 const Plugin = @This();
 
@@ -41,6 +49,7 @@ pub fn build(plugin: *const Plugin, app: *phasor_ecs.App) !void {
 
     try app.addSystem("Update", fps_pause_system);
     try app.addSystem("Update", fps_mouselook_system);
+    try app.addSystem("Update", fps_camera_pitch_system);
     try app.addSystem("Update", fps_movement_system);
     try app.addSystem("Update", fps_jump_system);
 }
@@ -117,10 +126,28 @@ fn fps_mouselook_system(
                 const max_pitch = std.math.pi / 2.0 - 0.01;
                 controller.pitch = std.math.clamp(controller.pitch, -max_pitch, max_pitch);
 
-                // Apply rotation to transform
+                // Apply yaw to body transform (Y-axis rotation only)
                 transform.rotation.y = controller.yaw;
-                transform.rotation.x = controller.pitch;
+                // Pitch is not applied here - it should be applied to child camera entity
             }
+        }
+    }
+}
+
+/// System that applies pitch to camera head entity
+fn fps_camera_pitch_system(
+    q_controller: phasor_ecs.Query(.{FpsController}),
+    q_camera_head: phasor_ecs.Query(.{ FpsCameraHead, LocalTransform3d }),
+) !void {
+    var controller_it = q_controller.iterator();
+    if (controller_it.next()) |controller_entity| {
+        const controller = controller_entity.get(FpsController).?;
+
+        // Find the camera head entity and update its local pitch rotation
+        var head_it = q_camera_head.iterator();
+        while (head_it.next()) |head_entity| {
+            const local_transform = head_entity.get(LocalTransform3d).?;
+            local_transform.rotation.x = controller.pitch;
         }
     }
 }

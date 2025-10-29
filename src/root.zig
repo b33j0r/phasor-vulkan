@@ -2,6 +2,7 @@ pub const VulkanPlugin = @import("VulkanPlugin.zig");
 pub const TimePlugin = @import("TimePlugin.zig");
 pub const FpsControllerPlugin = @import("FpsControllerPlugin.zig");
 pub const PhysicsPlugin = @import("PhysicsPlugin.zig");
+pub const ParentPlugin = @import("ParentPlugin.zig");
 // Optional exports if needed externally
 pub const InstancePlugin = @import("instance/InstancePlugin.zig");
 pub const DevicePlugin = @import("device/DevicePlugin.zig");
@@ -42,6 +43,7 @@ pub const OrbitCamera = components.OrbitCamera;
 // Export FPS controller components
 const fps_controller = @import("FpsControllerPlugin.zig");
 pub const FpsController = fps_controller.FpsController;
+pub const FpsCameraHead = fps_controller.FpsCameraHead;
 
 // Export physics components
 const physics = @import("PhysicsPlugin.zig");
@@ -53,3 +55,8 @@ pub const CapsuleCollider = physics.CapsuleCollider;
 const time_plugin = @import("TimePlugin.zig");
 pub const DeltaTime = time_plugin.DeltaTime;
 pub const ElapsedTime = time_plugin.ElapsedTime;
+
+// Export parent hierarchy components
+const parent_plugin = @import("ParentPlugin.zig");
+pub const Parent = parent_plugin.Parent;
+pub const LocalTransform3d = parent_plugin.LocalTransform3d;
