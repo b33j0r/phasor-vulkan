@@ -74,14 +74,14 @@ fn createFloorMesh(allocator: std.mem.Allocator, width: f32, depth: f32) !phasor
             const v2 = v0 + @as(u32, @intCast(tiles_x + 1));
             const v3 = v2 + 1;
 
-            // Triangle 1
+            // Triangle 1 (reversed winding for upward-facing)
             indices[idx] = v0;
-            indices[idx + 1] = v1;
-            indices[idx + 2] = v2;
-            // Triangle 2
+            indices[idx + 1] = v2;
+            indices[idx + 2] = v1;
+            // Triangle 2 (reversed winding for upward-facing)
             indices[idx + 3] = v2;
-            indices[idx + 4] = v1;
-            indices[idx + 5] = v3;
+            indices[idx + 4] = v3;
+            indices[idx + 5] = v1;
             idx += 6;
         }
     }
@@ -281,7 +281,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
             .height = 1.8,
         },
         phasor_vulkan.RigidBody{
-            .gravity_scale = 0.0, // Floating controller
+            .gravity_scale = 1.0,
             .kinematic = false,
         },
     });
@@ -300,7 +300,9 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     _ = try mut_commands.createEntity(.{
         floor_mesh,
         phasor_vulkan.Material{ .texture = &assets.floor_texture },
-        phasor_vulkan.Transform3d{},
+        phasor_vulkan.Transform3d{
+            .translation = .{ .x = 0.0, .y = -0.1, .z = 0.0 },
+        },
         phasor_vulkan.BoxCollider{
             .half_extents = .{ .x = arena_width / 2.0, .y = 0.1, .z = arena_depth / 2.0 },
         },
@@ -361,7 +363,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         },
     });
 
-    // Create ramp with platform
+    // Create ramp with stepped collision boxes to approximate slope
     const ramp_mesh = try createRampMesh(allocator, 4.0, 2.0, 4.0);
     _ = try mut_commands.createEntity(.{
         ramp_mesh,
@@ -369,18 +371,39 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         phasor_vulkan.Transform3d{
             .translation = .{ .x = -5.0, .y = 0.0, .z = -5.0 },
         },
-        phasor_vulkan.BoxCollider{
-            .half_extents = .{ .x = 2.0, .y = 1.0, .z = 2.0 },
-        },
     });
 
-    // Create platform at top of ramp
+    // Add invisible collision boxes to create walkable slope
+    // Divide the ramp into 8 steps
+    const ramp_width: f32 = 4.0;
+    const ramp_height: f32 = 2.0;
+    const ramp_depth: f32 = 4.0;
+    const num_steps: usize = 8;
+    const step_depth = ramp_depth / @as(f32, @floatFromInt(num_steps));
+    const step_height = ramp_height / @as(f32, @floatFromInt(num_steps));
+
+    var i: usize = 0;
+    while (i < num_steps) : (i += 1) {
+        const step_y = step_height * @as(f32, @floatFromInt(i)) + step_height / 2.0;
+        const step_z = -5.0 + ramp_depth / 2.0 - step_depth * @as(f32, @floatFromInt(i)) - step_depth / 2.0;
+
+        _ = try mut_commands.createEntity(.{
+            phasor_vulkan.Transform3d{
+                .translation = .{ .x = -5.0, .y = step_y, .z = step_z },
+            },
+            phasor_vulkan.BoxCollider{
+                .half_extents = .{ .x = ramp_width / 2.0, .y = step_height / 2.0, .z = step_depth / 2.0 },
+            },
+        });
+    }
+
+    // Create platform at top of ramp (flush with ramp top)
     const platform_mesh = try createBoxMesh(allocator, 4.0, 0.3, 4.0);
     _ = try mut_commands.createEntity(.{
         platform_mesh,
         phasor_vulkan.Material{ .texture = &assets.platform_texture },
         phasor_vulkan.Transform3d{
-            .translation = .{ .x = -5.0, .y = 2.15, .z = -7.0 },
+            .translation = .{ .x = -5.0, .y = 2.0, .z = -9.0 },
         },
         phasor_vulkan.BoxCollider{
             .half_extents = .{ .x = 2.0, .y = 0.15, .z = 2.0 },
@@ -446,7 +469,7 @@ pub fn main() !u8 {
     try app.addPlugin(&fps_controller_plugin);
 
     const physics_plugin = phasor_vulkan.PhysicsPlugin.init(.{
-        .gravity = 0.0, // No gravity for floating FPS
+        .gravity = -9.81,
     });
     try app.addPlugin(&physics_plugin);
 

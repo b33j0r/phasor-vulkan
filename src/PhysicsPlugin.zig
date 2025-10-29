@@ -268,9 +268,26 @@ fn checkSphereBoxOverlap(
     }
 
     const penetration_depth = sphere_radius - dist;
+    const normal_x = dx / dist;
+    const normal_y = dy / dist;
+    const normal_z = dz / dist;
+
+    // Check if this is a slope (normal has significant Y component but also horizontal)
+    // Slopes have upward-facing normals (normal_y > 0) with horizontal components
+    const is_slope = normal_y > 0.3 and (normal_x * normal_x + normal_z * normal_z) > 0.1;
+
+    if (is_slope) {
+        // For slopes, push primarily upward to allow walking
+        return phasor_common.Vec3{
+            .x = 0.0,
+            .y = penetration_depth / normal_y, // Adjust to walk up the slope
+            .z = 0.0,
+        };
+    }
+
     return phasor_common.Vec3{
-        .x = (dx / dist) * penetration_depth,
-        .y = (dy / dist) * penetration_depth,
-        .z = (dz / dist) * penetration_depth,
+        .x = normal_x * penetration_depth,
+        .y = normal_y * penetration_depth,
+        .z = normal_z * penetration_depth,
     };
 }

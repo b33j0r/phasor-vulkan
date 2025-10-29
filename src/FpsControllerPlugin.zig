@@ -8,6 +8,7 @@ const glfw = @import("glfw").c;
 const Transform3d = components.Transform3d;
 const DeltaTime = @import("TimePlugin.zig").DeltaTime;
 const Window = phasor_glfw.WindowPlugin.Window;
+const RigidBody = @import("PhysicsPlugin.zig").RigidBody;
 
 /// FPS controller component for first-person camera control
 pub const FpsController = struct {
@@ -15,6 +16,8 @@ pub const FpsController = struct {
     mouse_sensitivity: f32 = 0.002,
     /// Movement speed (units per second)
     move_speed: f32 = 5.0,
+    /// Jump force
+    jump_force: f32 = 5.0,
     /// Current yaw angle (rotation around Y axis)
     yaw: f32 = 0.0,
     /// Current pitch angle (rotation around X axis, clamped)
@@ -27,6 +30,8 @@ pub const FpsController = struct {
     last_mouse_x: f64 = 0.0,
     last_mouse_y: f64 = 0.0,
     first_mouse: bool = true,
+    /// Whether player is grounded
+    is_grounded: bool = false,
 };
 
 const Plugin = @This();
@@ -37,6 +42,7 @@ pub fn build(plugin: *const Plugin, app: *phasor_ecs.App) !void {
     try app.addSystem("Update", fps_pause_system);
     try app.addSystem("Update", fps_mouselook_system);
     try app.addSystem("Update", fps_movement_system);
+    try app.addSystem("Update", fps_jump_system);
 }
 
 fn fps_pause_system(
@@ -186,6 +192,29 @@ fn fps_movement_system(
 
             transform.translation.x += velocity_x;
             transform.translation.z += velocity_z;
+        }
+    }
+}
+
+fn fps_jump_system(
+    q_controller: phasor_ecs.Query(.{ FpsController, RigidBody, Transform3d }),
+    key_events: phasor_ecs.EventReader(phasor_glfw.InputPlugin.KeyDown),
+) !void {
+    var it = q_controller.iterator();
+    if (it.next()) |entity| {
+        var controller = entity.get(FpsController).?;
+        var body = entity.get(RigidBody).?;
+
+        if (controller.paused or !controller.enabled) return;
+
+        // Update grounded state based on vertical velocity
+        controller.is_grounded = @abs(body.velocity.y) < 0.1;
+
+        // Check for space bar press to jump
+        while (key_events.tryRecv()) |event| {
+            if (event.key == .space and controller.is_grounded) {
+                body.velocity.y = controller.jump_force;
+            }
         }
     }
 }
