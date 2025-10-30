@@ -61,6 +61,7 @@ pub const GltfMesh = struct {
     vertices: []const components.MeshVertex,
     indices: []const u32,
     name: ?[]const u8 = null,
+    material_index: ?u32 = null,
 };
 
 /// Material properties from GLTF

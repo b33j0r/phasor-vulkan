@@ -82,8 +82,8 @@ pub fn init(
     const pipeline = try createPipeline(vkd, pipeline_layout, render_pass, extent);
     errdefer vkd.destroyPipeline(pipeline, null);
 
-    const max_vertices: u32 = 10000;
-    const max_indices: u32 = 30000;
+    const max_vertices: u32 = 500000;  // Increased for complex scenes like Sponza
+    const max_indices: u32 = 1500000;
     const vertex_buffer_size = @sizeOf(components.MeshVertex) * max_vertices;
     const index_buffer_size = @sizeOf(u32) * max_indices;
 
@@ -166,6 +166,14 @@ pub fn collect(
     camera: *const components.Camera3d,
     camera_transform: *const Transform3d,
 ) !std.ArrayList(CollectedMesh) {
+    if (ctx.upload_counter.* == 0) {
+        std.debug.print("MeshRenderer.collect called - camera at ({d:.2}, {d:.2}, {d:.2})\n", .{
+            camera_transform.translation.x,
+            camera_transform.translation.y,
+            camera_transform.translation.z,
+        });
+    }
+
     var meshes = try std.ArrayList(CollectedMesh).initCapacity(ctx.allocator, 10);
     errdefer meshes.deinit(ctx.allocator);
 
@@ -181,10 +189,14 @@ pub fn collect(
     // Build projection matrix based on camera type
     const proj_matrix = buildProjectionMatrix(camera, ctx);
 
+    var mesh_count: usize = 0;
+    var first_transform: ?Transform3d = null;
     var it = query.iterator();
     while (it.next()) |entity| {
         if (entity.get(components.Mesh)) |mesh| {
+            mesh_count += 1;
             const transform = entity.get(Transform3d) orelse &Transform3d{};
+            if (first_transform == null) first_transform = transform.*;
             const material = entity.get(components.Material) orelse &components.Material{};
 
             // Build model matrix from transform
@@ -225,12 +237,35 @@ pub fn collect(
         }
     }
 
+    // Debug output
+    if (ctx.upload_counter.* == 0) {
+        std.debug.print("Rendering {} meshes with {} vertices, {} indices\n", .{ mesh_count, all_vertices.items.len, all_indices.items.len });
+        if (first_transform) |t| {
+            std.debug.print("First mesh transform: pos=({d:.2}, {d:.2}, {d:.2}) scale=({d:.2}, {d:.2}, {d:.2})\n", .{
+                t.translation.x,
+                t.translation.y,
+                t.translation.z,
+                t.scale.x,
+                t.scale.y,
+                t.scale.z,
+            });
+        }
+    }
+
     // Write mesh data directly to mapped memory
     if (all_vertices.items.len > 0) {
+        if (all_vertices.items.len > resources.max_vertices) {
+            std.debug.print("ERROR: Too many vertices! Have {}, max is {}\n", .{ all_vertices.items.len, resources.max_vertices });
+            return error.TooManyVertices;
+        }
         try ctx.writeToMappedBuffer(vkd, components.MeshVertex, resources.vertex_memory, all_vertices.items);
     }
 
     if (all_indices.items.len > 0) {
+        if (all_indices.items.len > resources.max_indices) {
+            std.debug.print("ERROR: Too many indices! Have {}, max is {}\n", .{ all_indices.items.len, resources.max_indices });
+            return error.TooManyIndices;
+        }
         try ctx.writeToMappedBuffer(vkd, u32, resources.index_memory, all_indices.items);
     }
 

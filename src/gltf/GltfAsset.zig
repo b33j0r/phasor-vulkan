@@ -20,6 +20,8 @@ pub const GltfAsset = struct {
         _ = vkd;
         _ = dev_res;
 
+        std.debug.print("Loading GLTF asset from: {s}\n", .{self.path});
+
         // Use a persistent allocator (will be freed in unload)
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         const allocator = gpa.allocator();
@@ -28,6 +30,8 @@ pub const GltfAsset = struct {
         // Load GLTF scene
         var importer = GltfImporter.init(allocator);
         const scene = try importer.loadScene(self.path);
+
+        std.debug.print("GLTF scene loaded: {} nodes, {} meshes\n", .{ scene.nodes.len, scene.meshes.len });
 
         // TODO: Load textures referenced by the scene
         // For now, textures array remains null
