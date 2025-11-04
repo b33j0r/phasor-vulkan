@@ -123,6 +123,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = 0.0, .y = 0.0, .z = 5.0 },
+            .rotation = .{ .x = 0.0, .y = std.math.pi, .z = 0.0 }, // Rotate 180° to look at origin
         },
         phasor_vulkan.OrbitCamera{
             .distance = 5.0,

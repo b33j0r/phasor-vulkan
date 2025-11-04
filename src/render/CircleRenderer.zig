@@ -262,7 +262,7 @@ fn createPipeline(
     const depth_stencil = vk.PipelineDepthStencilStateCreateInfo{
         .depth_test_enable = .true,
         .depth_write_enable = .true,
-        .depth_compare_op = .less,
+        .depth_compare_op = .greater,
         .depth_bounds_test_enable = .false,
         .stencil_test_enable = .false,
         .front = .{
