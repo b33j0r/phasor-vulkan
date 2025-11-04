@@ -19,8 +19,9 @@ pub fn build(self: *SwapchainPlugin, app: *App) !void {
     try app.addSystem("VkSwapchainDeinit", deinit_system);
 }
 
-fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_device: ResOpt(DeviceResource), r_render_bounds: ResOpt(phasor_common.RenderBounds)) !void {
+fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_device: ResOpt(DeviceResource), r_render_bounds: ResOpt(phasor_common.RenderBounds), r_allocator: Res(Allocator)) !void {
     const inst = r_instance.ptr orelse return error.MissingInstanceResource;
+    const allocator = r_allocator.ptr.allocator;
     const instance = inst.instance orelse return error.MissingInstance;
     const surface = inst.surface orelse return error.MissingSurface;
     const dev = r_device.ptr orelse return error.MissingDeviceResource;
@@ -31,8 +32,8 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_devi
     // Choose surface format (prefer SRGB) and present mode (FIFO for portability)
     var fmt_count: u32 = 0;
     _ = try instance.getPhysicalDeviceSurfaceFormatsKHR(phys, surface, &fmt_count, null);
-    const formats = try std.heap.page_allocator.alloc(vk.SurfaceFormatKHR, fmt_count);
-    defer std.heap.page_allocator.free(formats);
+    const formats = try allocator.alloc(vk.SurfaceFormatKHR, fmt_count);
+    defer allocator.free(formats);
     _ = try instance.getPhysicalDeviceSurfaceFormatsKHR(phys, surface, &fmt_count, formats.ptr);
 
     var chosen_format: vk.SurfaceFormatKHR = formats[0];
@@ -44,8 +45,8 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_devi
 
     var present_mode_count: u32 = 0;
     _ = try instance.getPhysicalDeviceSurfacePresentModesKHR(phys, surface, &present_mode_count, null);
-    const pmodes = try std.heap.page_allocator.alloc(vk.PresentModeKHR, present_mode_count);
-    defer std.heap.page_allocator.free(pmodes);
+    const pmodes = try allocator.alloc(vk.PresentModeKHR, present_mode_count);
+    defer allocator.free(pmodes);
     _ = try instance.getPhysicalDeviceSurfacePresentModesKHR(phys, surface, &present_mode_count, pmodes.ptr);
 
     // Always use FIFO for maximum compatibility
@@ -83,13 +84,13 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_devi
     // Retrieve images
     var sc_image_count: u32 = 0;
     _ = try device.getSwapchainImagesKHR(swapchain, &sc_image_count, null);
-    const images = try std.heap.page_allocator.alloc(vk.Image, sc_image_count);
-    errdefer std.heap.page_allocator.free(images);
+    const images = try allocator.alloc(vk.Image, sc_image_count);
+    errdefer allocator.free(images);
     _ = try device.getSwapchainImagesKHR(swapchain, &sc_image_count, images.ptr);
 
     // Create image views
-    var views = try std.heap.page_allocator.alloc(vk.ImageView, sc_image_count);
-    errdefer std.heap.page_allocator.free(views);
+    var views = try allocator.alloc(vk.ImageView, sc_image_count);
+    errdefer allocator.free(views);
     var i: usize = 0;
     errdefer for (views[0..i]) |v| device.destroyImageView(v, null);
     while (i < views.len) : (i += 1) {
@@ -168,6 +169,7 @@ fn handle_resize_system(
     r_device: ResOpt(DeviceResource),
     r_sc: ResOpt(SwapchainResource),
     event_reader: EventReader(phasor_common.WindowResized),
+    r_allocator: Res(Allocator),
 ) !void {
     // Check if there's a resize event
     const resize_event = event_reader.tryRecv() orelse return;
@@ -175,6 +177,7 @@ fn handle_resize_system(
     std.log.info("Vulkan SwapchainPlugin: handling window resize to {d}x{d}", .{ resize_event.width, resize_event.height });
 
     const inst = r_instance.ptr orelse return;
+    const allocator = r_allocator.ptr.allocator;
     const instance = inst.instance orelse return;
     const surface = inst.surface orelse return;
     const dev = r_device.ptr orelse return;
@@ -187,8 +190,8 @@ fn handle_resize_system(
 
     // Destroy old image views
     for (old_sc.views) |v| device.destroyImageView(v, null);
-    if (old_sc.views.len > 0) std.heap.page_allocator.free(old_sc.views);
-    if (old_sc.images.len > 0) std.heap.page_allocator.free(old_sc.images);
+    if (old_sc.views.len > 0) allocator.free(old_sc.views);
+    if (old_sc.images.len > 0) allocator.free(old_sc.images);
 
     // Get new surface capabilities
     const caps = try instance.getPhysicalDeviceSurfaceCapabilitiesKHR(phys, surface);
@@ -228,13 +231,13 @@ fn handle_resize_system(
     // Get new images
     var sc_image_count: u32 = 0;
     _ = try device.getSwapchainImagesKHR(new_swapchain, &sc_image_count, null);
-    const images = try std.heap.page_allocator.alloc(vk.Image, sc_image_count);
-    errdefer std.heap.page_allocator.free(images);
+    const images = try allocator.alloc(vk.Image, sc_image_count);
+    errdefer allocator.free(images);
     _ = try device.getSwapchainImagesKHR(new_swapchain, &sc_image_count, images.ptr);
 
     // Create new image views
-    var views = try std.heap.page_allocator.alloc(vk.ImageView, sc_image_count);
-    errdefer std.heap.page_allocator.free(views);
+    var views = try allocator.alloc(vk.ImageView, sc_image_count);
+    errdefer allocator.free(views);
     var i: usize = 0;
     errdefer for (views[0..i]) |v| device.destroyImageView(v, null);
     while (i < views.len) : (i += 1) {
@@ -310,7 +313,7 @@ fn handle_resize_system(
     std.log.info("Vulkan SwapchainPlugin: swapchain recreated ({d} images)", .{views.len});
 }
 
-fn deinit_system(r_device: ResOpt(DeviceResource), r_sc: ResOpt(SwapchainResource)) !void {
+fn deinit_system(r_device: ResOpt(DeviceResource), r_sc: ResOpt(SwapchainResource), r_allocator: Res(Allocator)) !void {
     if (r_sc.ptr) |sc| {
         if (r_device.ptr) |dev| {
             if (dev.device_proxy) |device| {
@@ -321,9 +324,10 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_sc: ResOpt(SwapchainResourc
                 if (sc.swapchain) |sc_handle| device.destroySwapchainKHR(sc_handle, null);
             }
         }
-        // Free arrays allocated with page allocator
-        if (sc.views.len > 0) std.heap.page_allocator.free(sc.views);
-        if (sc.images.len > 0) std.heap.page_allocator.free(sc.images);
+        // Free arrays allocated with allocator
+        const allocator = r_allocator.ptr.allocator;
+        if (sc.views.len > 0) allocator.free(sc.views);
+        if (sc.images.len > 0) allocator.free(sc.images);
     }
     std.log.info("Vulkan SwapchainPlugin: deinitialized", .{});
 }
@@ -363,8 +367,10 @@ const App = phasor_ecs.App;
 const Commands = phasor_ecs.Commands;
 const ResOpt = phasor_ecs.ResOpt;
 const EventReader = phasor_ecs.EventReader;
+const Res = phasor_ecs.Res;
 
 const phasor_common = @import("phasor-common");
 
 const DeviceResource = @import("../device/DevicePlugin.zig").DeviceResource;
 const InstanceResource = @import("../instance/InstancePlugin.zig").InstanceResource;
+const Allocator = @import("../AllocatorPlugin.zig").Allocator;

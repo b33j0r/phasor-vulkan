@@ -19,14 +19,15 @@ pub fn build(self: *DevicePlugin, app: *App) !void {
     try app.addSystem("VkDeviceDeinit", deinit_system);
 }
 
-fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource)) !void {
+fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_allocator: Res(Allocator)) !void {
     const inst_res = r_instance.ptr orelse return error.MissingInstanceResource;
+    const allocator = r_allocator.ptr.allocator;
     const vki = inst_res.instance_wrapper orelse return error.MissingInstanceWrapper;
     const instance = inst_res.instance orelse return error.MissingInstance;
     const surface = inst_res.surface orelse return error.MissingSurface;
 
     // Pick a suitable physical device with graphics + present and swapchain support
-    const candidate = try pickPhysicalDevice(instance, surface);
+    const candidate = try pickPhysicalDevice(instance, surface, allocator);
 
     // Create logical device with required queues and swapchain extension
     var qci: [2]vk.DeviceQueueCreateInfo = undefined; // may use 1 or 2 queues
@@ -57,7 +58,7 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource)) !void 
     }, null);
 
     // Load device wrapper/proxy
-    const vkd = try std.heap.page_allocator.create(vk.DeviceWrapper);
+    const vkd = try allocator.create(vk.DeviceWrapper);
     vkd.* = vk.DeviceWrapper.load(device_handle, vki.dispatch.vkGetDeviceProcAddr.?);
     const device_proxy = vk.DeviceProxy.init(device_handle, vkd);
 
@@ -90,12 +91,12 @@ const DeviceCandidate = struct {
     present_family: u32,
 };
 
-fn pickPhysicalDevice(instance: vk.InstanceProxy, surface: vk.SurfaceKHR) !DeviceCandidate {
-    const pdevs = try instance.enumeratePhysicalDevicesAlloc(std.heap.page_allocator);
-    defer std.heap.page_allocator.free(pdevs);
+fn pickPhysicalDevice(instance: vk.InstanceProxy, surface: vk.SurfaceKHR, allocator: std.mem.Allocator) !DeviceCandidate {
+    const pdevs = try instance.enumeratePhysicalDevicesAlloc(allocator);
+    defer allocator.free(pdevs);
 
     for (pdevs) |pdev| {
-        if (try isSuitable(instance, pdev, surface)) |alloc| {
+        if (try isSuitable(instance, pdev, surface, allocator)) |alloc| {
             return .{ .pdev = pdev, .graphics_family = alloc.graphics_family, .present_family = alloc.present_family };
         }
     }
@@ -104,16 +105,16 @@ fn pickPhysicalDevice(instance: vk.InstanceProxy, surface: vk.SurfaceKHR) !Devic
 
 const QueueAlloc = struct { graphics_family: u32, present_family: u32 };
 
-fn isSuitable(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, surface: vk.SurfaceKHR) !?QueueAlloc {
-    if (!try checkDeviceExtensions(instance, pdev)) return null;
+fn isSuitable(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, surface: vk.SurfaceKHR, allocator: std.mem.Allocator) !?QueueAlloc {
+    if (!try checkDeviceExtensions(instance, pdev, allocator)) return null;
     if (!try checkSurfaceSupport(instance, pdev, surface)) return null;
-    if (try findQueueFamilies(instance, pdev, surface)) |qa| return qa;
+    if (try findQueueFamilies(instance, pdev, surface, allocator)) |qa| return qa;
     return null;
 }
 
-fn checkDeviceExtensions(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice) !bool {
-    const propsv = try instance.enumerateDeviceExtensionPropertiesAlloc(pdev, null, std.heap.page_allocator);
-    defer std.heap.page_allocator.free(propsv);
+fn checkDeviceExtensions(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, allocator: std.mem.Allocator) !bool {
+    const propsv = try instance.enumerateDeviceExtensionPropertiesAlloc(pdev, null, allocator);
+    defer allocator.free(propsv);
     const required = [_][*:0]const u8{ vk.extensions.khr_swapchain.name };
     for (required) |ext| {
         var found = false;
@@ -133,9 +134,9 @@ fn checkSurfaceSupport(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, surf
     return fmt_count > 0 and pm_count > 0;
 }
 
-fn findQueueFamilies(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, surface: vk.SurfaceKHR) !?QueueAlloc {
-    const families = try instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(pdev, std.heap.page_allocator);
-    defer std.heap.page_allocator.free(families);
+fn findQueueFamilies(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, surface: vk.SurfaceKHR, allocator: std.mem.Allocator) !?QueueAlloc {
+    const families = try instance.getPhysicalDeviceQueueFamilyPropertiesAlloc(pdev, allocator);
+    defer allocator.free(families);
     var graphics: ?u32 = null;
     var present: ?u32 = null;
     for (families, 0..) |props, i| {
@@ -147,10 +148,10 @@ fn findQueueFamilies(instance: vk.InstanceProxy, pdev: vk.PhysicalDevice, surfac
     return null;
 }
 
-fn deinit_system(r_dev: ResOpt(DeviceResource)) !void {
+fn deinit_system(r_dev: ResOpt(DeviceResource), r_allocator: Res(Allocator)) !void {
     if (r_dev.ptr) |res| {
         if (res.device_proxy) |devp| devp.destroyDevice(null);
-        if (res.device_wrapper) |vkd| std.heap.page_allocator.destroy(vkd);
+        if (res.device_wrapper) |vkd| r_allocator.ptr.allocator.destroy(vkd);
     }
     std.log.info("Vulkan DevicePlugin: deinitialized", .{});
 }
@@ -165,5 +166,7 @@ const phasor_ecs = @import("phasor-ecs");
 const App = phasor_ecs.App;
 const Commands = phasor_ecs.Commands;
 const ResOpt = phasor_ecs.ResOpt;
+const Res = phasor_ecs.Res;
 
 const InstanceResource = @import("../instance/InstancePlugin.zig").InstanceResource;
+const Allocator = @import("../AllocatorPlugin.zig").Allocator;

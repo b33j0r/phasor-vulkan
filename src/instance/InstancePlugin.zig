@@ -8,26 +8,27 @@ pub const InstanceResource = struct {
     debug_messenger: ?vk.DebugUtilsMessengerEXT = null,
 };
 
-pub const Settings = struct {
-    enable_validation: bool = false,
-};
-
 enable_validation: bool = false,
 
 pub fn build(self: *InstancePlugin, app: *App) !void {
     _ = self;
+    // Insert resource
+    const res = InstanceResource{};
+    try app.insertResource(res);
+
     // VulkanPlugin creates precise schedules; we only register systems to them.
     try app.addSystem("VkInstanceInit", init_system);
     try app.addSystem("VkInstanceDeinit", deinit_system);
 }
 
-fn init_system(commands: *Commands, r_window: ResOpt(Window)) !void {
+fn init_system(r_window: ResOpt(Window), r_res: ResMut(InstanceResource), r_allocator: Res(Allocator)) !void {
     // Ensure window exists
     const win = r_window.ptr orelse return error.MissingWindowResource;
     const window_handle = win.handle orelse return error.MissingWindowHandle;
 
     // Load base wrapper using GLFW loader
-    var res: InstanceResource = .{};
+    var res: *InstanceResource = r_res.ptr;
+    const allocator = r_allocator.ptr.allocator;
     res.vkb = vk.BaseWrapper.load(glfwGetInstanceProcAddress);
 
     // Build extension list: GLFW required + debug utils + macOS portability
@@ -36,17 +37,20 @@ fn init_system(commands: *Commands, r_window: ResOpt(Window)) !void {
 
     const extra_count: u32 = 3;
     const total: usize = @intCast(ext_count + extra_count);
-    var ext_list = try std.heap.page_allocator.alloc([*:0]const u8, total);
-    defer std.heap.page_allocator.free(ext_list);
+    var ext_list = try allocator.alloc([*:0]const u8, total);
+    defer allocator.free(ext_list);
 
     // Copy GLFW required extensions
     var i: usize = 0;
     while (i < ext_count) : (i += 1) ext_list[i] = ext_ptr[i];
 
     // Additional extensions for debug/macOS portability
-    ext_list[i] = vk.extensions.ext_debug_utils.name; i += 1;
-    ext_list[i] = vk.extensions.khr_portability_enumeration.name; i += 1;
-    ext_list[i] = vk.extensions.khr_get_physical_device_properties_2.name; i += 1;
+    ext_list[i] = vk.extensions.ext_debug_utils.name;
+    i += 1;
+    ext_list[i] = vk.extensions.khr_portability_enumeration.name;
+    i += 1;
+    ext_list[i] = vk.extensions.khr_get_physical_device_properties_2.name;
+    i += 1;
 
     // Create instance via vulkan-zig wrapper
     const app_name: [*:0]const u8 = "Phasor Vulkan";
@@ -64,7 +68,7 @@ fn init_system(commands: *Commands, r_window: ResOpt(Window)) !void {
     }, null);
 
     // Load instance wrapper and proxy
-    const vki = try std.heap.page_allocator.create(vk.InstanceWrapper);
+    const vki = try allocator.create(vk.InstanceWrapper);
     vki.* = vk.InstanceWrapper.load(instance_handle, res.vkb.?.dispatch.vkGetInstanceProcAddr.?);
     res.instance_wrapper = vki;
     res.instance = vk.InstanceProxy.init(instance_handle, vki);
@@ -74,23 +78,21 @@ fn init_system(commands: *Commands, r_window: ResOpt(Window)) !void {
     if (glfwCreateWindowSurface(res.instance.?.handle, window_handle, null, &surface) != .success) {
         // cleanup
         res.instance.?.destroyInstance(null);
-        std.heap.page_allocator.destroy(vki);
+        allocator.destroy(vki);
         return error.VulkanCreateSurfaceFailed;
     }
     res.surface = surface;
 
-    try commands.insertResource(res);
-
     std.log.info("Vulkan InstancePlugin: instance+surface created via vulkan-zig", .{});
 }
 
-fn deinit_system(r_inst: ResOpt(InstanceResource)) !void {
+fn deinit_system(r_inst: ResOpt(InstanceResource), r_allocator: Res(Allocator)) !void {
     if (r_inst.ptr) |res| {
         if (res.instance) |inst| {
             if (res.surface) |surf| inst.destroySurfaceKHR(surf, null);
             inst.destroyInstance(null);
         }
-        if (res.instance_wrapper) |vki| std.heap.page_allocator.destroy(vki);
+        if (res.instance_wrapper) |vki| r_allocator.ptr.allocator.destroy(vki);
         // BaseWrapper contains no heap allocations; no action needed.
     }
     std.log.info("Vulkan InstancePlugin: deinitialized", .{});
@@ -110,6 +112,10 @@ const phasor_ecs = @import("phasor-ecs");
 const App = phasor_ecs.App;
 const Commands = phasor_ecs.Commands;
 const ResOpt = phasor_ecs.ResOpt;
+const ResMut = phasor_ecs.ResMut;
+const Res = phasor_ecs.Res;
 
 const phasor_glfw = @import("phasor-glfw");
 const Window = phasor_glfw.WindowPlugin.Window;
+
+const Allocator = @import("../AllocatorPlugin.zig").Allocator;

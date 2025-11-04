@@ -5,15 +5,18 @@ pub const Settings = struct {
 };
 
 settings: Settings = .{},
-
-// Sub-plugins live as fields to keep a stable address
 instance_plugin: InstancePlugin = .{},
 device_plugin: DevicePlugin = .{},
 swapchain_plugin: SwapchainPlugin = .{},
 render_plugin: RenderPlugin = .{},
 
 pub fn init(settings: Settings) VulkanPlugin {
-    return .{ .settings = settings };
+    return .{
+        .settings = settings,
+        .instance_plugin = .{
+            .enable_validation = settings.enable_validation,
+        },
+    };
 }
 
 pub fn build(self: *VulkanPlugin, app: *App) !void {
@@ -59,12 +62,6 @@ pub fn build(self: *VulkanPlugin, app: *App) !void {
     // Schedule VkRender between Render and EndFrame
     _ = try app.scheduleBetween("VkRender", "Render", "EndFrame");
 
-    // Pass settings to sub-plugins where relevant
-    self.instance_plugin = .{ .enable_validation = self.settings.enable_validation };
-    self.device_plugin = .{};
-    self.swapchain_plugin = .{};
-    self.render_plugin = .{};
-
     // Register sub-plugins (they will only add systems to the above schedules)
     try app.addPlugin(&self.instance_plugin);
     try app.addPlugin(&self.device_plugin);
@@ -75,6 +72,8 @@ pub fn build(self: *VulkanPlugin, app: *App) !void {
 // ─────────────────────────────────────────────
 // Imports
 // ─────────────────────────────────────────────
+const std = @import("std");
+
 const phasor_ecs = @import("phasor-ecs");
 const App = phasor_ecs.App;
 

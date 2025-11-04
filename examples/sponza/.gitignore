@@ -5,3 +5,6 @@
 *.gltf
 *.fbx
 *.obj
+
+examples/
+sponza-gltf-pbr/

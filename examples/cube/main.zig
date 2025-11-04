@@ -110,6 +110,8 @@ fn createCubeMesh(allocator: std.mem.Allocator) !phasor_vulkan.Mesh {
 // ============================================================================
 
 fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
+    const allocator = std.heap.c_allocator;
+
     // Create camera with perspective projection
     _ = try mut_commands.createEntity(.{
         phasor_vulkan.Camera3d{
@@ -129,7 +131,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
     });
 
     // Create colored cube
-    const mesh = try createCubeMesh(std.heap.page_allocator);
+    const mesh = try createCubeMesh(allocator);
     _ = try mut_commands.createEntity(.{
         mesh,
         phasor_vulkan.Material{
@@ -182,8 +184,12 @@ fn rotate_cube_system(
 // ============================================================================
 
 pub fn main() !u8 {
-    var app = try phasor_ecs.App.default(std.heap.page_allocator);
+    const allocator = std.heap.c_allocator;
+    var app = try phasor_ecs.App.default(allocator);
     defer app.deinit();
+
+    const allocator_plugin = phasor_vulkan.AllocatorPlugin{ .allocator = allocator };
+    try app.addPlugin(&allocator_plugin);
 
     try app.insertResource(phasor_common.ClearColor{ .color = phasor_common.Color.BLACK });
 

@@ -1,3 +1,4 @@
+pub const AllocatorPlugin = @import("AllocatorPlugin.zig");
 pub const VulkanPlugin = @import("VulkanPlugin.zig");
 pub const TimePlugin = @import("TimePlugin.zig");
 pub const FpsControllerPlugin = @import("FpsControllerPlugin.zig");

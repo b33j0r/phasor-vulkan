@@ -48,8 +48,7 @@ pub const FontAtlas = struct {
     }
 
     /// Bake ASCII characters into the atlas
-    pub fn bakeASCII(self: *FontAtlas, first_char: u8, num_chars: u8) ![]CharData {
-        const allocator = std.heap.page_allocator; // TODO: pass allocator
+    pub fn bakeASCII(self: *FontAtlas, first_char: u8, num_chars: u8, allocator: std.mem.Allocator) ![]CharData {
         const char_data = try allocator.alloc(CharData, num_chars);
 
         // Simple horizontal packing for now

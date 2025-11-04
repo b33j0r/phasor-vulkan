@@ -584,7 +584,7 @@ fn createRampMesh(allocator: std.mem.Allocator, width: f32, height: f32, depth: 
 // ============================================================================
 
 fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
-    const allocator = std.heap.page_allocator;
+    const allocator = std.heap.c_allocator;
 
     // Create FPS player body (yaw control, physics)
     // Human scale: ~1.7m tall, eyes at ~1.6m
@@ -834,8 +834,13 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
 // ============================================================================
 
 pub fn main() !u8 {
-    var app = try phasor_ecs.App.default(std.heap.page_allocator);
+    const allocator = std.heap.c_allocator;
+
+    var app = try phasor_ecs.App.default(allocator);
     defer app.deinit();
+
+    const allocator_plugin = phasor_vulkan.AllocatorPlugin{ .allocator = allocator };
+    try app.addPlugin(&allocator_plugin);
 
     try app.insertResource(phasor_common.ClearColor{ .color = phasor_common.Color.BLACK });
 

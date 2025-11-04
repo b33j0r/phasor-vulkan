@@ -9,6 +9,9 @@ const DeviceResource = @import("device/DevicePlugin.zig").DeviceResource;
 const stb_truetype = @import("stb_truetype");
 
 const App = phasor_ecs.App;
+const Res = phasor_ecs.Res;
+
+const Allocator = @import("AllocatorPlugin.zig").Allocator;
 
 pub fn AssetPlugin(comptime T: type) type {
     return struct {
@@ -22,29 +25,31 @@ pub fn AssetPlugin(comptime T: type) type {
             try app.addSystem("VkDeinitBegin", Self.unload);
         }
 
-        pub fn load(r_assets: ResMut(T), r_device: ResOpt(DeviceResource)) !void {
+        pub fn load(r_assets: ResMut(T), r_device: ResOpt(DeviceResource), r_allocator: Res(Allocator)) !void {
             const assets = r_assets.ptr;
             const dev_res = r_device.ptr orelse return error.MissingDeviceResource;
             const vkd = dev_res.device_proxy orelse return error.MissingDevice;
+            const allocator = r_allocator.ptr.allocator;
 
             const fields = std.meta.fields(T);
             inline for (fields) |field| {
                 const field_name = field.name;
                 var field_ptr = &@field(assets, field_name);
-                try field_ptr.load(vkd, dev_res);
+                try field_ptr.load(vkd, dev_res, allocator);
             }
         }
 
-        pub fn unload(r_assets: ResMut(T), r_device: ResOpt(DeviceResource)) !void {
+        pub fn unload(r_assets: ResMut(T), r_device: ResOpt(DeviceResource), r_allocator: Res(Allocator)) !void {
             const assets = r_assets.ptr;
             const dev_res = r_device.ptr orelse return error.MissingDeviceResource;
             const vkd = dev_res.device_proxy orelse return error.MissingDevice;
+            const allocator = r_allocator.ptr.allocator;
 
             const fields = std.meta.fields(T);
             inline for (fields) |field| {
                 const field_name = field.name;
                 var field_ptr = &@field(assets, field_name);
-                try field_ptr.unload(vkd);
+                try field_ptr.unload(vkd, allocator);
             }
         }
     };
@@ -59,11 +64,7 @@ pub const Texture = struct {
     width: u32 = 0,
     height: u32 = 0,
 
-    pub fn load(self: *Texture, vkd: anytype, dev_res: *const DeviceResource) !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
-
+    pub fn load(self: *Texture, vkd: anytype, dev_res: *const DeviceResource, allocator: std.mem.Allocator) !void {
         // Load PNG using zigimg
         var file = try std.fs.cwd().openFile(self.path, .{});
         defer file.close();
@@ -197,7 +198,7 @@ pub const Texture = struct {
         std.log.info("Loaded texture from path: {s} ({}x{})", .{ self.path, self.width, self.height });
     }
 
-    pub fn unload(self: *Texture, vkd: anytype) !void {
+    pub fn unload(self: *Texture, vkd: anytype, _: std.mem.Allocator) !void {
         if (self.sampler) |sampler| {
             vkd.destroySampler(sampler, null);
             self.sampler = null;
@@ -364,13 +365,8 @@ pub const Font = struct {
 
     char_data: []stb_truetype.CharData = &.{},
     first_char: u8 = 32,
-    allocator: ?std.mem.Allocator = null,
 
-    pub fn load(self: *Font, vkd: anytype, dev_res: *const DeviceResource) !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        defer _ = gpa.deinit();
-        const allocator = gpa.allocator();
-
+    pub fn load(self: *Font, vkd: anytype, dev_res: *const DeviceResource, allocator: std.mem.Allocator) !void {
         // Load font file
         const font_data = try std.fs.cwd().readFileAlloc(allocator, self.path, 10 * 1024 * 1024);
         defer allocator.free(font_data);
@@ -380,9 +376,8 @@ pub const Font = struct {
         defer atlas.deinit(allocator);
 
         // Bake ASCII characters
-        const char_data = try atlas.bakeASCII(self.first_char, 95); // ASCII 32-126
+        const char_data = try atlas.bakeASCII(self.first_char, 95, allocator); // ASCII 32-126
         self.char_data = char_data;
-        self.allocator = std.heap.page_allocator; // Store allocator for cleanup
 
         // Upload atlas texture to GPU (grayscale R8)
         const image_size: vk.DeviceSize = @intCast(atlas.bitmap.len);
@@ -488,7 +483,7 @@ pub const Font = struct {
         std.log.info("Loaded font from path: {s} ({}x{} atlas)", .{ self.path, self.atlas_width, self.atlas_height });
     }
 
-    pub fn unload(self: *Font, vkd: anytype) !void {
+    pub fn unload(self: *Font, vkd: anytype, allocator: std.mem.Allocator) !void {
         if (self.sampler) |sampler| {
             vkd.destroySampler(sampler, null);
             self.sampler = null;
@@ -505,8 +500,8 @@ pub const Font = struct {
             vkd.freeMemory(mem, null);
             self.memory = null;
         }
-        if (self.char_data.len > 0 and self.allocator != null) {
-            self.allocator.?.free(self.char_data);
+        if (self.char_data.len > 0) {
+            allocator.free(self.char_data);
             self.char_data = &.{};
         }
         std.log.info("Unloaded font from path: {s}", .{self.path});

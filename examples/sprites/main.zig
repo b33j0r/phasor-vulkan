@@ -268,10 +268,10 @@ fn control_ship(
             ship.velocity_y -= @sin(ship.rotation) * thrust * 0.5 * dt;
         }
         if (turn_left) {
-            ship.rotation -= turn_rate * dt;  // Counter-clockwise
+            ship.rotation -= turn_rate * dt; // Counter-clockwise
         }
         if (turn_right) {
-            ship.rotation += turn_rate * dt;  // Clockwise
+            ship.rotation += turn_rate * dt; // Clockwise
         }
 
         // Cap velocity at max speed
@@ -406,8 +406,12 @@ fn npc_waypoint_planner(
 }
 
 pub fn main() !u8 {
-    var app = try phasor_ecs.App.default(std.heap.page_allocator);
+    const allocator = std.heap.c_allocator;
+    var app = try phasor_ecs.App.default(allocator);
     defer app.deinit();
+
+    const allocator_plugin = phasor_vulkan.AllocatorPlugin{ .allocator = allocator };
+    try app.addPlugin(&allocator_plugin);
 
     const window_plugin = phasor_glfw.WindowPlugin.init(.{
         .title = "Phasor Vulkan - PNG Texture Loading Demo",

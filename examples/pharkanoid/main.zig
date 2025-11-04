@@ -1077,8 +1077,12 @@ fn high_score_input(
 // ============================================================================
 
 pub fn main() !u8 {
-    var app = try phasor_ecs.App.default(std.heap.page_allocator);
+    const allocator = std.heap.c_allocator;
+    var app = try phasor_ecs.App.default(allocator);
     defer app.deinit();
+
+    const allocator_plugin = phasor_vulkan.AllocatorPlugin{ .allocator = allocator };
+    try app.addPlugin(&allocator_plugin);
 
     const window_plugin = phasor_glfw.WindowPlugin.init(.{
         .title = "Pharkanoid - Phasor Arkanoid",
@@ -1101,7 +1105,7 @@ pub fn main() !u8 {
     try app.addPlugin(&asset_plugin);
 
     // Add Phase Plugin
-    var phase_plugin = GamePhasesPlugin{ .allocator = std.heap.page_allocator };
+    var phase_plugin = GamePhasesPlugin{ .allocator = allocator };
     try app.addPlugin(&phase_plugin);
 
     return try app.run();
