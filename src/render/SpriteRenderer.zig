@@ -281,7 +281,7 @@ fn collectSprite(
     const p4_window = RenderContext.rotatePoint(-half_w, half_h, cos_r, sin_r);
 
     const depth = RenderContext.zToDepth(pos.z);
-    const color = components.Color4{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+    const color = phasor_common.Color.F32{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
 
     // Find or create batch
     var batch = try findOrCreateBatch(ctx, state, sprite.texture);

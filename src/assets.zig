@@ -8,6 +8,8 @@ const Commands = phasor_ecs.Commands;
 const DeviceResource = @import("device/DevicePlugin.zig").DeviceResource;
 const RenderResource = @import("render/RenderPlugin.zig").RenderResource;
 const stb_truetype = @import("stb_truetype");
+const utils = @import("render/utils.zig");
+const ShaderPipeline = @import("render/ShaderPipeline.zig");
 
 const App = phasor_ecs.App;
 const Res = phasor_ecs.Res;
@@ -108,7 +110,7 @@ pub const Texture = struct {
         defer vkd.destroyBuffer(staging_buffer, null);
 
         const mem_reqs = vkd.getBufferMemoryRequirements(staging_buffer);
-        const staging_memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+        const staging_memory = try utils.allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
         defer vkd.freeMemory(staging_memory, null);
 
         try vkd.bindBufferMemory(staging_buffer, staging_memory, 0);
@@ -142,15 +144,15 @@ pub const Texture = struct {
         errdefer vkd.destroyImage(image, null);
 
         const img_mem_reqs = vkd.getImageMemoryRequirements(image);
-        const image_memory = try allocateMemory(vkd, dev_res, img_mem_reqs, .{ .device_local_bit = true });
+        const image_memory = try utils.allocateMemory(vkd, dev_res, img_mem_reqs, .{ .device_local_bit = true });
         errdefer vkd.freeMemory(image_memory, null);
 
         try vkd.bindImageMemory(image, image_memory, 0);
 
         // Transition image layout and copy from staging buffer
-        try transitionImageLayout(vkd, dev_res, image, .undefined, .transfer_dst_optimal);
-        try copyBufferToImage(vkd, dev_res, staging_buffer, image, self.width, self.height);
-        try transitionImageLayout(vkd, dev_res, image, .transfer_dst_optimal, .shader_read_only_optimal);
+        try utils.transitionImageLayout(vkd, dev_res, image, .undefined, .transfer_dst_optimal);
+        try utils.copyBufferToImage(vkd, dev_res, staging_buffer, image, self.width, self.height);
+        try utils.transitionImageLayout(vkd, dev_res, image, .transfer_dst_optimal, .shader_read_only_optimal);
 
         // Create image view
         const image_view = try vkd.createImageView(&.{
@@ -221,139 +223,6 @@ pub const Texture = struct {
     }
 };
 
-fn allocateMemory(vkd: anytype, dev_res: *const DeviceResource, requirements: vk.MemoryRequirements, properties: vk.MemoryPropertyFlags) !vk.DeviceMemory {
-    const mem_props = dev_res.memory_properties;
-
-    var i: u32 = 0;
-    while (i < mem_props.memory_type_count) : (i += 1) {
-        if ((requirements.memory_type_bits & (@as(u32, 1) << @intCast(i))) != 0) {
-            const type_props = mem_props.memory_types[i].property_flags;
-
-            const has_host_visible = type_props.host_visible_bit or !properties.host_visible_bit;
-            const has_host_coherent = type_props.host_coherent_bit or !properties.host_coherent_bit;
-            const has_device_local = type_props.device_local_bit or !properties.device_local_bit;
-
-            if (has_host_visible and has_host_coherent and has_device_local) {
-                return try vkd.allocateMemory(&.{
-                    .allocation_size = requirements.size,
-                    .memory_type_index = i,
-                }, null);
-            }
-        }
-    }
-    return error.NoSuitableMemoryType;
-}
-
-fn transitionImageLayout(vkd: anytype, dev_res: *const DeviceResource, image: vk.Image, old_layout: vk.ImageLayout, new_layout: vk.ImageLayout) !void {
-    const cmd_pool = try vkd.createCommandPool(&.{
-        .queue_family_index = dev_res.graphics_family_index.?,
-        .flags = .{ .transient_bit = true },
-    }, null);
-    defer vkd.destroyCommandPool(cmd_pool, null);
-
-    var cmdbuf: vk.CommandBuffer = undefined;
-    try vkd.allocateCommandBuffers(&.{
-        .command_pool = cmd_pool,
-        .level = .primary,
-        .command_buffer_count = 1,
-    }, @ptrCast(&cmdbuf));
-
-    try vkd.beginCommandBuffer(cmdbuf, &.{ .flags = .{ .one_time_submit_bit = true } });
-
-    var barrier = vk.ImageMemoryBarrier{
-        .old_layout = old_layout,
-        .new_layout = new_layout,
-        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
-        .image = image,
-        .subresource_range = .{
-            .aspect_mask = .{ .color_bit = true },
-            .base_mip_level = 0,
-            .level_count = 1,
-            .base_array_layer = 0,
-            .layer_count = 1,
-        },
-        .src_access_mask = .{},
-        .dst_access_mask = .{},
-    };
-
-    var src_stage: vk.PipelineStageFlags = undefined;
-    var dst_stage: vk.PipelineStageFlags = undefined;
-
-    if (old_layout == .undefined and new_layout == .transfer_dst_optimal) {
-        barrier.src_access_mask = .{};
-        barrier.dst_access_mask = .{ .transfer_write_bit = true };
-        src_stage = .{ .top_of_pipe_bit = true };
-        dst_stage = .{ .transfer_bit = true };
-    } else if (old_layout == .transfer_dst_optimal and new_layout == .shader_read_only_optimal) {
-        barrier.src_access_mask = .{ .transfer_write_bit = true };
-        barrier.dst_access_mask = .{ .shader_read_bit = true };
-        src_stage = .{ .transfer_bit = true };
-        dst_stage = .{ .fragment_shader_bit = true };
-    } else {
-        return error.UnsupportedLayoutTransition;
-    }
-
-    vkd.cmdPipelineBarrier(cmdbuf, src_stage, dst_stage, .{}, 0, undefined, 0, undefined, 1, @ptrCast(&barrier));
-
-    try vkd.endCommandBuffer(cmdbuf);
-
-    const submit = vk.SubmitInfo{
-        .command_buffer_count = 1,
-        .p_command_buffers = @ptrCast(&cmdbuf),
-        .p_wait_dst_stage_mask = undefined,
-    };
-
-    const gfx_q = dev_res.graphics_queue.?;
-    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
-    try vkd.queueWaitIdle(gfx_q);
-}
-
-fn copyBufferToImage(vkd: anytype, dev_res: *const DeviceResource, buffer: vk.Buffer, image: vk.Image, width: u32, height: u32) !void {
-    const cmd_pool = try vkd.createCommandPool(&.{
-        .queue_family_index = dev_res.graphics_family_index.?,
-        .flags = .{ .transient_bit = true },
-    }, null);
-    defer vkd.destroyCommandPool(cmd_pool, null);
-
-    var cmdbuf: vk.CommandBuffer = undefined;
-    try vkd.allocateCommandBuffers(&.{
-        .command_pool = cmd_pool,
-        .level = .primary,
-        .command_buffer_count = 1,
-    }, @ptrCast(&cmdbuf));
-
-    try vkd.beginCommandBuffer(cmdbuf, &.{ .flags = .{ .one_time_submit_bit = true } });
-
-    const region = vk.BufferImageCopy{
-        .buffer_offset = 0,
-        .buffer_row_length = 0,
-        .buffer_image_height = 0,
-        .image_subresource = .{
-            .aspect_mask = .{ .color_bit = true },
-            .mip_level = 0,
-            .base_array_layer = 0,
-            .layer_count = 1,
-        },
-        .image_offset = .{ .x = 0, .y = 0, .z = 0 },
-        .image_extent = .{ .width = width, .height = height, .depth = 1 },
-    };
-
-    vkd.cmdCopyBufferToImage(cmdbuf, buffer, image, .transfer_dst_optimal, 1, @ptrCast(&region));
-
-    try vkd.endCommandBuffer(cmdbuf);
-
-    const submit = vk.SubmitInfo{
-        .command_buffer_count = 1,
-        .p_command_buffers = @ptrCast(&cmdbuf),
-        .p_wait_dst_stage_mask = undefined,
-    };
-
-    const gfx_q = dev_res.graphics_queue.?;
-    try vkd.queueSubmit(gfx_q, 1, @ptrCast(&submit), .null_handle);
-    try vkd.queueWaitIdle(gfx_q);
-}
-
 pub const Font = struct {
     path: [:0]const u8,
     font_height: f32 = 48.0,
@@ -393,7 +262,7 @@ pub const Font = struct {
         defer vkd.destroyBuffer(staging_buffer, null);
 
         const mem_reqs = vkd.getBufferMemoryRequirements(staging_buffer);
-        const staging_memory = try allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+        const staging_memory = try utils.allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
         defer vkd.freeMemory(staging_memory, null);
 
         try vkd.bindBufferMemory(staging_buffer, staging_memory, 0);
@@ -427,15 +296,15 @@ pub const Font = struct {
         errdefer vkd.destroyImage(image, null);
 
         const img_mem_reqs = vkd.getImageMemoryRequirements(image);
-        const image_memory = try allocateMemory(vkd, dev_res, img_mem_reqs, .{ .device_local_bit = true });
+        const image_memory = try utils.allocateMemory(vkd, dev_res, img_mem_reqs, .{ .device_local_bit = true });
         errdefer vkd.freeMemory(image_memory, null);
 
         try vkd.bindImageMemory(image, image_memory, 0);
 
         // Transition and copy
-        try transitionImageLayout(vkd, dev_res, image, .undefined, .transfer_dst_optimal);
-        try copyBufferToImage(vkd, dev_res, staging_buffer, image, self.atlas_width, self.atlas_height);
-        try transitionImageLayout(vkd, dev_res, image, .transfer_dst_optimal, .shader_read_only_optimal);
+        try utils.transitionImageLayout(vkd, dev_res, image, .undefined, .transfer_dst_optimal);
+        try utils.copyBufferToImage(vkd, dev_res, staging_buffer, image, self.atlas_width, self.atlas_height);
+        try utils.transitionImageLayout(vkd, dev_res, image, .transfer_dst_optimal, .shader_read_only_optimal);
 
         // Create image view
         const image_view = try vkd.createImageView(&.{
@@ -538,7 +407,7 @@ pub const Shader = struct {
         errdefer vkd.destroyPipelineLayout(pipeline_layout, null);
 
         // Create pipeline using the provided shader SPIR-V
-        const pipeline = try createShaderPipeline(vkd, pipeline_layout, render_res.render_pass, render_res.swapchain_extent, self.vert_spv, self.frag_spv);
+        const pipeline = try ShaderPipeline.createMeshPipeline(vkd, pipeline_layout, render_res.render_pass, render_res.swapchain_extent, self.vert_spv, self.frag_spv);
         errdefer vkd.destroyPipeline(pipeline, null);
 
         self.pipeline_layout = pipeline_layout;
@@ -559,192 +428,3 @@ pub const Shader = struct {
         std.log.info("Unloaded custom shader", .{});
     }
 };
-
-// MeshVertex structure for shader pipeline creation (duplicated to avoid circular dependency)
-const Vec3 = extern struct {
-    x: f32,
-    y: f32,
-    z: f32,
-};
-
-const Vec2 = extern struct {
-    x: f32,
-    y: f32,
-};
-
-const Color4 = extern struct {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-};
-
-const MeshVertex = extern struct {
-    pos: Vec3,
-    normal: Vec3,
-    uv: Vec2,
-    color: Color4,
-};
-
-fn createShaderPipeline(
-    vkd: anytype,
-    layout: vk.PipelineLayout,
-    render_pass: vk.RenderPass,
-    extent: vk.Extent2D,
-    vert_spv: []const u8,
-    frag_spv: []const u8,
-) !vk.Pipeline {
-    const vert_module = try vkd.createShaderModule(&.{
-        .code_size = vert_spv.len,
-        .p_code = @ptrCast(@alignCast(vert_spv.ptr)),
-    }, null);
-    defer vkd.destroyShaderModule(vert_module, null);
-
-    const frag_module = try vkd.createShaderModule(&.{
-        .code_size = frag_spv.len,
-        .p_code = @ptrCast(@alignCast(frag_spv.ptr)),
-    }, null);
-    defer vkd.destroyShaderModule(frag_module, null);
-
-    const shader_stages = [_]vk.PipelineShaderStageCreateInfo{
-        .{ .stage = .{ .vertex_bit = true }, .module = vert_module, .p_name = "main" },
-        .{ .stage = .{ .fragment_bit = true }, .module = frag_module, .p_name = "main" },
-    };
-
-    const vertex_binding = vk.VertexInputBindingDescription{
-        .binding = 0,
-        .stride = @sizeOf(MeshVertex),
-        .input_rate = .vertex,
-    };
-
-    const vertex_attributes = [_]vk.VertexInputAttributeDescription{
-        .{ .binding = 0, .location = 0, .format = .r32g32b32_sfloat, .offset = @offsetOf(MeshVertex, "pos") },
-        .{ .binding = 0, .location = 1, .format = .r32g32b32_sfloat, .offset = @offsetOf(MeshVertex, "normal") },
-        .{ .binding = 0, .location = 2, .format = .r32g32_sfloat, .offset = @offsetOf(MeshVertex, "uv") },
-        .{ .binding = 0, .location = 3, .format = .r32g32b32a32_sfloat, .offset = @offsetOf(MeshVertex, "color") },
-    };
-
-    const vertex_input_info = vk.PipelineVertexInputStateCreateInfo{
-        .vertex_binding_description_count = 1,
-        .p_vertex_binding_descriptions = @ptrCast(&vertex_binding),
-        .vertex_attribute_description_count = vertex_attributes.len,
-        .p_vertex_attribute_descriptions = &vertex_attributes,
-    };
-
-    const input_assembly = vk.PipelineInputAssemblyStateCreateInfo{
-        .topology = .triangle_list,
-        .primitive_restart_enable = .false,
-    };
-
-    const viewport = vk.Viewport{
-        .x = 0,
-        .y = 0,
-        .width = @floatFromInt(extent.width),
-        .height = @floatFromInt(extent.height),
-        .min_depth = 0,
-        .max_depth = 1,
-    };
-
-    const scissor = vk.Rect2D{
-        .offset = .{ .x = 0, .y = 0 },
-        .extent = extent,
-    };
-
-    const viewport_state = vk.PipelineViewportStateCreateInfo{
-        .viewport_count = 1,
-        .p_viewports = @ptrCast(&viewport),
-        .scissor_count = 1,
-        .p_scissors = @ptrCast(&scissor),
-    };
-
-    const rasterizer = vk.PipelineRasterizationStateCreateInfo{
-        .depth_clamp_enable = .false,
-        .rasterizer_discard_enable = .false,
-        .polygon_mode = .fill,
-        .cull_mode = .{ .back_bit = true },
-        .front_face = .counter_clockwise,
-        .depth_bias_enable = .false,
-        .depth_bias_constant_factor = 0,
-        .depth_bias_clamp = 0,
-        .depth_bias_slope_factor = 0,
-        .line_width = 1,
-    };
-
-    const multisampling = vk.PipelineMultisampleStateCreateInfo{
-        .rasterization_samples = .{ .@"1_bit" = true },
-        .sample_shading_enable = .false,
-        .min_sample_shading = 0,
-        .alpha_to_coverage_enable = .false,
-        .alpha_to_one_enable = .false,
-    };
-
-    const depth_stencil = vk.PipelineDepthStencilStateCreateInfo{
-        .depth_test_enable = .true,
-        .depth_write_enable = .true,
-        .depth_compare_op = .greater,
-        .depth_bounds_test_enable = .false,
-        .min_depth_bounds = 0.0,
-        .max_depth_bounds = 1.0,
-        .stencil_test_enable = .false,
-        .front = .{
-            .fail_op = .keep,
-            .pass_op = .keep,
-            .depth_fail_op = .keep,
-            .compare_op = .always,
-            .compare_mask = 0,
-            .write_mask = 0,
-            .reference = 0,
-        },
-        .back = .{
-            .fail_op = .keep,
-            .pass_op = .keep,
-            .depth_fail_op = .keep,
-            .compare_op = .always,
-            .compare_mask = 0,
-            .write_mask = 0,
-            .reference = 0,
-        },
-    };
-
-    const color_blend_attachment = vk.PipelineColorBlendAttachmentState{
-        .blend_enable = .false,
-        .src_color_blend_factor = .one,
-        .dst_color_blend_factor = .zero,
-        .color_blend_op = .add,
-        .src_alpha_blend_factor = .one,
-        .dst_alpha_blend_factor = .zero,
-        .alpha_blend_op = .add,
-        .color_write_mask = .{ .r_bit = true, .g_bit = true, .b_bit = true, .a_bit = true },
-    };
-
-    const color_blending = vk.PipelineColorBlendStateCreateInfo{
-        .logic_op_enable = .false,
-        .logic_op = .copy,
-        .attachment_count = 1,
-        .p_attachments = @ptrCast(&color_blend_attachment),
-        .blend_constants = [_]f32{ 0, 0, 0, 0 },
-    };
-
-    const pipeline_info = vk.GraphicsPipelineCreateInfo{
-        .stage_count = 2,
-        .p_stages = &shader_stages,
-        .p_vertex_input_state = &vertex_input_info,
-        .p_input_assembly_state = &input_assembly,
-        .p_viewport_state = &viewport_state,
-        .p_rasterization_state = &rasterizer,
-        .p_multisample_state = &multisampling,
-        .p_depth_stencil_state = &depth_stencil,
-        .p_color_blend_state = &color_blending,
-        .p_dynamic_state = null,
-        .layout = layout,
-        .render_pass = render_pass,
-        .subpass = 0,
-        .base_pipeline_handle = .null_handle,
-        .base_pipeline_index = -1,
-    };
-
-    var pipeline: vk.Pipeline = undefined;
-    _ = try vkd.createGraphicsPipelines(.null_handle, 1, @ptrCast(&pipeline_info), null, @ptrCast(&pipeline));
-
-    return pipeline;
-}

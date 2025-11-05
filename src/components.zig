@@ -99,14 +99,6 @@ pub const Sprite3D = struct {
 
 pub const Renderable = struct {};
 
-/// Color with 4 components (RGBA)
-pub const Color4 = extern struct {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-};
-
 /// Vertex data for sprite rendering
 pub const SpriteVertex = extern struct {
     /// Position in clip space [-1, 1] with depth
@@ -114,7 +106,7 @@ pub const SpriteVertex = extern struct {
     /// Texture coordinates [0, 1]
     uv: phasor_common.Vec2,
     /// RGBA color/tint
-    color: Color4,
+    color: phasor_common.Color.F32,
 };
 
 /// 3D Transform component (simplified for now)
@@ -144,7 +136,7 @@ pub const VerticalAlignment = enum {
 pub const Text = struct {
     font: *const assets.Font,
     text: [:0]const u8,
-    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+    color: phasor_common.Color.F32 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
     horizontal_alignment: HorizontalAlignment = .Left,
     vertical_alignment: VerticalAlignment = .Baseline,
     /// If true, text was heap-allocated and should be freed in deinit
@@ -155,7 +147,7 @@ pub const Text = struct {
     pub const __trait__ = Renderable;
 
     /// Initialize Text with a static string literal (no allocation)
-    pub fn initStatic(font: *const assets.Font, text: [:0]const u8, color: Color4) Text {
+    pub fn initStatic(font: *const assets.Font, text: [:0]const u8, color: phasor_common.Color.F32) Text {
         return .{
             .font = font,
             .text = text,
@@ -167,7 +159,7 @@ pub const Text = struct {
 
     /// Initialize Text with a heap-allocated dynamic string
     /// The Text component takes ownership and will free the string in deinit
-    pub fn initDynamic(font: *const assets.Font, text: [:0]const u8, color: Color4, allocator: std.mem.Allocator) Text {
+    pub fn initDynamic(font: *const assets.Font, text: [:0]const u8, color: phasor_common.Color.F32, allocator: std.mem.Allocator) Text {
         return .{
             .font = font,
             .text = text,
@@ -195,7 +187,7 @@ pub const Circle = struct {
     /// Radius in window coordinates (logical pixels)
     radius: f32,
     /// Circle color with alpha
-    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+    color: phasor_common.Color.F32 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
 
     pub const __trait__ = Renderable;
 };
@@ -208,7 +200,7 @@ pub const Rectangle = struct {
     /// Height in window coordinates (logical pixels)
     height: f32,
     /// Rectangle color with alpha
-    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+    color: phasor_common.Color.F32 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
 
     pub const __trait__ = Renderable;
 };
@@ -218,7 +210,7 @@ pub const ColorVertex = extern struct {
     /// Position in clip space [-1, 1] with depth
     pos: phasor_common.Vec3,
     /// RGBA color
-    color: Color4,
+    color: phasor_common.Color.F32,
 };
 
 /// Mesh component for 3D rendering with vertex and index buffers
@@ -252,13 +244,13 @@ pub const MeshVertex = extern struct {
     /// Texture coordinates
     uv: phasor_common.Vec2 = .{ .x = 0.0, .y = 0.0 },
     /// Vertex color
-    color: Color4,
+    color: phasor_common.Color.F32,
 };
 
 /// Material component for mesh rendering
 pub const Material = struct {
     /// Base color/tint
-    color: Color4 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+    color: phasor_common.Color.F32 = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
     /// Optional texture
     texture: ?*const assets.Texture = null,
 };
