@@ -131,12 +131,15 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         },
     });
 
-    // Create colored cube
+    // Create colored cube with vertex color shader
     const mesh = try createCubeMesh(allocator);
     _ = try mut_commands.createEntity(.{
         mesh,
         phasor_vulkan.Material{
             .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
+        },
+        phasor_vulkan.ShaderMaterial{
+            .shader_type = .VertexColor,
         },
         phasor_vulkan.Transform3d{},
     });
@@ -160,6 +163,11 @@ fn orbit_camera_system(
         transform.translation.x = orbit.target.x + orbit.distance * @cos(orbit.angle);
         transform.translation.z = orbit.target.z + orbit.distance * @sin(orbit.angle);
         transform.translation.y = orbit.target.y;
+
+        // Calculate direction to target and set camera rotation to look at it
+        const dx = orbit.target.x - transform.translation.x;
+        const dz = orbit.target.z - transform.translation.z;
+        transform.rotation.y = std.math.atan2(dx, dz);
     }
 }
 

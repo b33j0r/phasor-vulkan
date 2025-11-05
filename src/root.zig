@@ -39,6 +39,8 @@ pub const Mesh = components.Mesh;
 pub const MeshVertex = components.MeshVertex;
 pub const MeshNode = components.MeshNode;
 pub const Material = components.Material;
+pub const ShaderMaterial = components.ShaderMaterial;
+pub const ShaderType = components.ShaderType;
 pub const OrbitCamera = components.OrbitCamera;
 
 // Export FPS controller components

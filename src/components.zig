@@ -263,6 +263,22 @@ pub const Material = struct {
     texture: ?*const assets.Texture = null,
 };
 
+/// Shader type enumeration for identifying which shader variant to use
+pub const ShaderType = enum {
+    /// Default shader with texture sampling (mesh.vert/mesh.frag)
+    Default,
+    /// Vertex color shader without texture (mesh_vertex_color.vert/mesh_vertex_color.frag)
+    VertexColor,
+    // Add more shader types here as needed (e.g., PBR, Unlit, Wireframe, etc.)
+};
+
+/// ShaderMaterial component for specifying custom shaders
+/// When attached to a mesh entity, this overrides the default shader
+pub const ShaderMaterial = struct {
+    /// Which shader variant to use
+    shader_type: ShaderType = .Default,
+};
+
 /// Orbit camera controller component
 pub const OrbitCamera = struct {
     /// Distance from target

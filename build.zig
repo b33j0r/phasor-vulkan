@@ -161,6 +161,8 @@ pub fn build(b: *std.Build) void {
         .{ .src = "shaders/rectangle.frag", .dst = "shaders/rectangle.frag.spv" },
         .{ .src = "shaders/mesh.vert", .dst = "shaders/mesh.vert.spv" },
         .{ .src = "shaders/mesh.frag", .dst = "shaders/mesh.frag.spv" },
+        .{ .src = "shaders/mesh_vertex_color.vert", .dst = "shaders/mesh_vertex_color.vert.spv" },
+        .{ .src = "shaders/mesh_vertex_color.frag", .dst = "shaders/mesh_vertex_color.frag.spv" },
     };
 
     // Compile shaders and collect their outputs
@@ -424,6 +426,8 @@ fn generateShaderImports() []const u8 {
         \\pub const rectangle_frag align(@alignOf(u32)) = @embedFile("rectangle.frag.spv").*;
         \\pub const mesh_vert align(@alignOf(u32)) = @embedFile("mesh.vert.spv").*;
         \\pub const mesh_frag align(@alignOf(u32)) = @embedFile("mesh.frag.spv").*;
+        \\pub const mesh_vertex_color_vert align(@alignOf(u32)) = @embedFile("mesh_vertex_color.vert.spv").*;
+        \\pub const mesh_vertex_color_frag align(@alignOf(u32)) = @embedFile("mesh_vertex_color.frag.spv").*;
         \\
     ;
 }
