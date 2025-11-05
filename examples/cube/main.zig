@@ -3,6 +3,7 @@ const phasor_ecs = @import("phasor-ecs");
 const phasor_glfw = @import("phasor-glfw");
 const phasor_vulkan = @import("phasor-vulkan");
 const phasor_common = @import("phasor-common");
+const cube_shaders = @import("cube_shaders");
 
 // ============================================================================
 // Cube Mesh Data
@@ -109,7 +110,15 @@ fn createCubeMesh(allocator: std.mem.Allocator) !phasor_vulkan.Mesh {
 // Systems
 // ============================================================================
 
-fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
+// Define assets for the cube example
+const CubeAssets = struct {
+    cube_shader: phasor_vulkan.Shader = .{
+        .vert_spv = &cube_shaders.cube_vert,
+        .frag_spv = &cube_shaders.cube_frag,
+    },
+};
+
+fn setup_scene(mut_commands: *phasor_ecs.Commands, cube_assets: phasor_ecs.Res(CubeAssets)) !void {
     const allocator = std.heap.c_allocator;
 
     // Create camera with perspective projection
@@ -123,7 +132,6 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         },
         phasor_vulkan.Transform3d{
             .translation = .{ .x = 0.0, .y = 0.0, .z = 5.0 },
-            .rotation = .{ .x = 0.0, .y = std.math.pi, .z = 0.0 }, // Rotate 180° to look at origin
         },
         phasor_vulkan.OrbitCamera{
             .distance = 5.0,
@@ -131,15 +139,15 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands) !void {
         },
     });
 
-    // Create colored cube with vertex color shader
+    // Create colored cube with custom shader
     const mesh = try createCubeMesh(allocator);
     _ = try mut_commands.createEntity(.{
         mesh,
         phasor_vulkan.Material{
             .color = .{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 },
         },
-        phasor_vulkan.ShaderMaterial{
-            .shader_type = .VertexColor,
+        phasor_vulkan.CustomShader{
+            .shader = &cube_assets.ptr.cube_shader,
         },
         phasor_vulkan.Transform3d{},
     });
@@ -156,18 +164,28 @@ fn orbit_camera_system(
         const orbit = entity.get(phasor_vulkan.OrbitCamera).?;
         const transform = entity.get(phasor_vulkan.Transform3d).?;
 
-        // Update angle
+        // Update orbit angle based on rotation speed
         orbit.angle += orbit.rotation_speed * dt;
 
-        // Update camera position in orbit
+        // Update camera position along the orbit path (around target on XZ plane)
         transform.translation.x = orbit.target.x + orbit.distance * @cos(orbit.angle);
         transform.translation.z = orbit.target.z + orbit.distance * @sin(orbit.angle);
         transform.translation.y = orbit.target.y;
 
-        // Calculate direction to target and set camera rotation to look at it
+        // Compute look-at rotation so camera faces the target
         const dx = orbit.target.x - transform.translation.x;
         const dz = orbit.target.z - transform.translation.z;
+        const dy = orbit.target.y - transform.translation.y;
+
+        // Yaw (around Y axis)
         transform.rotation.y = std.math.atan2(dx, dz);
+
+        // Pitch (around X axis)
+        const horizontal_distance = @sqrt(dx * dx + dz * dz);
+        transform.rotation.x = std.math.atan2(dy, horizontal_distance);
+
+        // No roll for orbit camera
+        transform.rotation.z = 0.0;
     }
 }
 
@@ -203,7 +221,7 @@ pub fn main() !u8 {
     try app.insertResource(phasor_common.ClearColor{ .color = phasor_common.Color.BLACK });
 
     const window_plugin = phasor_glfw.WindowPlugin.init(.{
-        .title = "Cube Demo - 3D Mesh Rendering",
+        .title = "Cube Demo - Custom Shader Example",
         .width = 800,
         .height = 600,
     });
@@ -217,6 +235,10 @@ pub fn main() !u8 {
 
     var time_plugin = phasor_vulkan.TimePlugin{};
     try app.addPlugin(&time_plugin);
+
+    // Add cube assets plugin
+    const cube_assets_plugin = phasor_vulkan.AssetPlugin(CubeAssets){};
+    try app.addPlugin(&cube_assets_plugin);
 
     try app.addSystem("Startup", setup_scene);
     try app.addSystem("Update", orbit_camera_system);

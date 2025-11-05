@@ -37,6 +37,7 @@ pub const RenderResource = struct {
 
     // Core Vulkan resources
     render_pass: vk.RenderPass,
+    swapchain_extent: vk.Extent2D,
     framebuffers: []vk.Framebuffer,
     cmd_pool: vk.CommandPool,
     cmd_buffers: []vk.CommandBuffer,
@@ -106,6 +107,7 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         .gpa = gpa,
         .allocator = allocator,
         .render_pass = render_pass,
+        .swapchain_extent = swap.extent,
         .framebuffers = framebuffers,
         .cmd_pool = cmd_pool,
         .cmd_buffers = cmd_buffers,

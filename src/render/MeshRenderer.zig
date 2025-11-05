@@ -13,13 +13,9 @@ const Transform3d = components.Transform3d;
 const RenderContext = @import("RenderContext.zig");
 
 pub const MeshResources = struct {
-    // Pipeline resources - default textured pipeline
+    // Pipeline resources
     pipeline_layout: vk.PipelineLayout,
     pipeline_default: vk.Pipeline,
-
-    // Vertex color pipeline (no texture sampling)
-    pipeline_layout_vertex_color: vk.PipelineLayout,
-    pipeline_vertex_color: vk.Pipeline,
 
     // Shared buffers
     vertex_buffer: vk.Buffer,
@@ -29,7 +25,7 @@ pub const MeshResources = struct {
     max_vertices: u32,
     max_indices: u32,
 
-    // Default pipeline descriptor resources
+    // Descriptor resources
     descriptor_set_layout: vk.DescriptorSetLayout,
     descriptor_pool: vk.DescriptorPool,
 };
@@ -88,21 +84,8 @@ pub fn init(
     }, null);
     errdefer vkd.destroyPipelineLayout(pipeline_layout, null);
 
-    const pipeline_default = try createPipeline(vkd, pipeline_layout, render_pass, extent, .Default);
+    const pipeline_default = try createPipeline(vkd, pipeline_layout, render_pass, extent);
     errdefer vkd.destroyPipeline(pipeline_default, null);
-
-    // Create vertex color pipeline (no descriptor sets needed)
-    const pipeline_layout_vertex_color = try vkd.createPipelineLayout(&.{
-        .flags = .{},
-        .set_layout_count = 0,
-        .p_set_layouts = undefined,
-        .push_constant_range_count = 1,
-        .p_push_constant_ranges = @ptrCast(&push_constant_range),
-    }, null);
-    errdefer vkd.destroyPipelineLayout(pipeline_layout_vertex_color, null);
-
-    const pipeline_vertex_color = try createPipeline(vkd, pipeline_layout_vertex_color, render_pass, extent, .VertexColor);
-    errdefer vkd.destroyPipeline(pipeline_vertex_color, null);
 
     const max_vertices: u32 = 10000;
     const max_indices: u32 = 30000;
@@ -149,8 +132,6 @@ pub fn init(
     return .{
         .pipeline_layout = pipeline_layout,
         .pipeline_default = pipeline_default,
-        .pipeline_layout_vertex_color = pipeline_layout_vertex_color,
-        .pipeline_vertex_color = pipeline_vertex_color,
         .vertex_buffer = vertex_buffer,
         .vertex_memory = vertex_memory,
         .index_buffer = index_buffer,
@@ -168,9 +149,7 @@ pub fn deinit(vkd: anytype, resources: *const MeshResources) void {
     vkd.destroyBuffer(resources.vertex_buffer, null);
     vkd.freeMemory(resources.vertex_memory, null);
     vkd.destroyPipeline(resources.pipeline_default, null);
-    vkd.destroyPipeline(resources.pipeline_vertex_color, null);
     vkd.destroyPipelineLayout(resources.pipeline_layout, null);
-    vkd.destroyPipelineLayout(resources.pipeline_layout_vertex_color, null);
     vkd.destroyDescriptorPool(resources.descriptor_pool, null);
     vkd.destroyDescriptorSetLayout(resources.descriptor_set_layout, null);
 }
@@ -182,7 +161,7 @@ pub const CollectedMesh = struct {
     index_count: u32,
     mvp_matrix: [16]f32,
     texture: ?*const assets.Texture,
-    shader_type: components.ShaderType,
+    custom_shader: ?*const assets.Shader,
 };
 
 pub fn collect(
@@ -213,10 +192,7 @@ pub fn collect(
         if (entity.get(components.Mesh)) |mesh| {
             const transform = entity.get(Transform3d) orelse &Transform3d{};
             const material = entity.get(components.Material) orelse &components.Material{};
-            const shader_material = entity.get(components.ShaderMaterial);
-
-            // Determine shader type: use ShaderMaterial if present, otherwise use Default
-            const shader_type = if (shader_material) |sm| sm.shader_type else components.ShaderType.Default;
+            const custom_shader_component = entity.get(components.CustomShader);
 
             // Build model matrix from transform
             const model_matrix = buildModelMatrix(transform);
@@ -252,7 +228,7 @@ pub fn collect(
                 .index_count = @intCast(mesh.indices.len),
                 .mvp_matrix = mvp_matrix,
                 .texture = material.texture,
-                .shader_type = shader_type,
+                .custom_shader = if (custom_shader_component) |cs| cs.shader else null,
             });
         }
     }
@@ -284,24 +260,30 @@ pub fn record(
     vkd.cmdBindIndexBuffer(cmdbuf, resources.index_buffer, 0, .uint32);
 
     var index_offset: u32 = 0;
-    var current_shader_type: ?components.ShaderType = null;
+    var current_pipeline: ?vk.Pipeline = null;
+    var current_layout: ?vk.PipelineLayout = null;
 
     for (meshes) |mesh| {
-        // Switch pipeline if shader type changed
-        if (current_shader_type == null or current_shader_type.? != mesh.shader_type) {
-            current_shader_type = mesh.shader_type;
-            switch (mesh.shader_type) {
-                .Default => {
-                    vkd.cmdBindPipeline(cmdbuf, .graphics, resources.pipeline_default);
-                },
-                .VertexColor => {
-                    vkd.cmdBindPipeline(cmdbuf, .graphics, resources.pipeline_vertex_color);
-                },
-            }
+        // Determine which pipeline and layout to use
+        const pipeline = if (mesh.custom_shader) |shader|
+            shader.pipeline.?
+        else
+            resources.pipeline_default;
+
+        const layout = if (mesh.custom_shader) |shader|
+            shader.pipeline_layout.?
+        else
+            resources.pipeline_layout;
+
+        // Bind pipeline if it changed
+        if (current_pipeline == null or current_pipeline.? != pipeline) {
+            vkd.cmdBindPipeline(cmdbuf, .graphics, pipeline);
+            current_pipeline = pipeline;
+            current_layout = layout;
         }
 
-        // Bind texture if using Default shader and texture is available
-        if (mesh.shader_type == .Default) {
+        // Only handle texture binding for default pipeline (custom shaders don't have descriptor sets)
+        if (mesh.custom_shader == null) {
             if (mesh.texture) |texture| {
                 if (texture.image_view != null and texture.sampler != null) {
                     // Create and bind descriptor set for this texture
@@ -333,17 +315,12 @@ pub fn record(
                     };
 
                     vkd.updateDescriptorSets(1, @ptrCast(&write_descriptor), 0, undefined);
-                    vkd.cmdBindDescriptorSets(cmdbuf, .graphics, resources.pipeline_layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
+                    vkd.cmdBindDescriptorSets(cmdbuf, .graphics, layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
                 }
             }
         }
 
-        // Push MVP matrix (appropriate pipeline layout based on shader type)
-        const layout = switch (mesh.shader_type) {
-            .Default => resources.pipeline_layout,
-            .VertexColor => resources.pipeline_layout_vertex_color,
-        };
-
+        // Push MVP matrix
         vkd.cmdPushConstants(
             cmdbuf,
             layout,
@@ -522,33 +499,19 @@ fn createPipeline(
     layout: vk.PipelineLayout,
     render_pass: vk.RenderPass,
     extent: vk.Extent2D,
-    shader_type: components.ShaderType,
 ) !vk.Pipeline {
     const shaders = @import("shader_imports");
 
-    // Select shaders based on shader type
-    const vert_module = switch (shader_type) {
-        .Default => try vkd.createShaderModule(&.{
-            .code_size = shaders.mesh_vert.len,
-            .p_code = @ptrCast(&shaders.mesh_vert),
-        }, null),
-        .VertexColor => try vkd.createShaderModule(&.{
-            .code_size = shaders.mesh_vertex_color_vert.len,
-            .p_code = @ptrCast(&shaders.mesh_vertex_color_vert),
-        }, null),
-    };
+    const vert_module = try vkd.createShaderModule(&.{
+        .code_size = shaders.mesh_vert.len,
+        .p_code = @ptrCast(&shaders.mesh_vert),
+    }, null);
     defer vkd.destroyShaderModule(vert_module, null);
 
-    const frag_module = switch (shader_type) {
-        .Default => try vkd.createShaderModule(&.{
-            .code_size = shaders.mesh_frag.len,
-            .p_code = @ptrCast(&shaders.mesh_frag),
-        }, null),
-        .VertexColor => try vkd.createShaderModule(&.{
-            .code_size = shaders.mesh_vertex_color_frag.len,
-            .p_code = @ptrCast(&shaders.mesh_vertex_color_frag),
-        }, null),
-    };
+    const frag_module = try vkd.createShaderModule(&.{
+        .code_size = shaders.mesh_frag.len,
+        .p_code = @ptrCast(&shaders.mesh_frag),
+    }, null);
     defer vkd.destroyShaderModule(frag_module, null);
 
     const shader_stages = [_]vk.PipelineShaderStageCreateInfo{

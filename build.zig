@@ -161,8 +161,6 @@ pub fn build(b: *std.Build) void {
         .{ .src = "shaders/rectangle.frag", .dst = "shaders/rectangle.frag.spv" },
         .{ .src = "shaders/mesh.vert", .dst = "shaders/mesh.vert.spv" },
         .{ .src = "shaders/mesh.frag", .dst = "shaders/mesh.frag.spv" },
-        .{ .src = "shaders/mesh_vertex_color.vert", .dst = "shaders/mesh_vertex_color.vert.spv" },
-        .{ .src = "shaders/mesh_vertex_color.frag", .dst = "shaders/mesh_vertex_color.frag.spv" },
     };
 
     // Compile shaders and collect their outputs
@@ -336,6 +334,35 @@ pub fn build(b: *std.Build) void {
     //
     // ─── CUBE EXAMPLE ──────────────────────────────────────────────
     //
+    // Compile cube-specific shaders
+    const cube_shader_files = [_]ShaderFile{
+        .{ .src = "examples/cube/shaders/cube.vert", .dst = "cube.vert.spv" },
+        .{ .src = "examples/cube/shaders/cube.frag", .dst = "cube.frag.spv" },
+    };
+
+    var cube_shader_outputs: [cube_shader_files.len]std.Build.LazyPath = undefined;
+    inline for (cube_shader_files, 0..) |shader, i| {
+        const compile_cmd = b.addSystemCommand(&.{"glslc"});
+        compile_cmd.addFileArg(b.path(shader.src));
+        compile_cmd.addArg("-o");
+        const output = compile_cmd.addOutputFileArg(std.fs.path.basename(shader.dst));
+        compile_shaders.dependOn(&compile_cmd.step);
+        cube_shader_outputs[i] = output;
+    }
+
+    // Generate cube shader imports module
+    const write_cube_shaders = b.addWriteFiles();
+    const cube_shader_imports_path = write_cube_shaders.add("cube_shaders.zig",
+        \\// Auto-generated cube shader imports
+        \\pub const cube_vert align(@alignOf(u32)) = @embedFile("cube.vert.spv").*;
+        \\pub const cube_frag align(@alignOf(u32)) = @embedFile("cube.frag.spv").*;
+        \\
+    );
+
+    inline for (cube_shader_files, 0..) |shader, i| {
+        _ = write_cube_shaders.addCopyFile(cube_shader_outputs[i], std.fs.path.basename(shader.dst));
+    }
+
     const examples_cube_mod = b.addModule("examples-cube", .{
         .root_source_file = b.path("examples/cube/main.zig"),
         .target = target,
@@ -347,6 +374,11 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phasor-common", .module = phasor_common_mod },
         },
     });
+
+    // Add cube shaders import to the cube example
+    examples_cube_mod.addImport("cube_shaders", b.createModule(.{
+        .root_source_file = cube_shader_imports_path,
+    }));
 
     const examples_cube = b.addExecutable(.{
         .name = "examples-cube",
@@ -426,8 +458,6 @@ fn generateShaderImports() []const u8 {
         \\pub const rectangle_frag align(@alignOf(u32)) = @embedFile("rectangle.frag.spv").*;
         \\pub const mesh_vert align(@alignOf(u32)) = @embedFile("mesh.vert.spv").*;
         \\pub const mesh_frag align(@alignOf(u32)) = @embedFile("mesh.frag.spv").*;
-        \\pub const mesh_vertex_color_vert align(@alignOf(u32)) = @embedFile("mesh_vertex_color.vert.spv").*;
-        \\pub const mesh_vertex_color_frag align(@alignOf(u32)) = @embedFile("mesh_vertex_color.frag.spv").*;
         \\
     ;
 }
