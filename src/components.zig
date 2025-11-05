@@ -50,6 +50,8 @@ pub const Camera3d = union(enum) {
             /// Center is (0,0), y increases upwards
             Center,
         } = .TopLeft,
+        near: f32 = -10.0,
+        far: f32 = 10.0,
     },
 };
 

@@ -327,7 +327,7 @@ fn collectText(
     var batch = try findOrCreateBatch(ctx, state, @as(*const assets.Texture, @ptrCast(font)));
 
     const pos = transform.translation;
-    const depth = pos.z;
+    const depth = RenderContext.zToDepth(pos.z);
 
     const camera_relative_x = pos.x - ctx.camera_offset.x;
     const camera_relative_y = pos.y - ctx.camera_offset.y;

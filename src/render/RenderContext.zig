@@ -58,11 +58,23 @@ pub fn rotatePoint(x: f32, y: f32, cos_rot: f32, sin_rot: f32) struct { x: f32, 
     };
 }
 
-/// Map z-coordinate to normalized depth [0, 1] for depth testing
-/// Lower depth values are closer to camera (rendered on top)
-/// z=0 → depth=0.5 (near), z=-1 → depth=1.0 (far), z=1 → depth=0.0 (very near)
+/// Map z-coordinate to normalized depth [0, 1] for depth testing with reverse-Z
+/// Using reverse-Z depth buffer (cleared to 0.0, compare op = greater):
+/// - Higher depth values win (are closer to camera)
+/// - For orthographic/viewport cameras with default range [-10, 10]:
+///   - z=10 (far) → depth=1.0 (closest, always passes)
+///   - z=0 (neutral) → depth=0.5 (middle)
+///   - z=-10 (near) → depth=0.0 (farthest, at clear boundary)
+pub fn zToDepthWithPlanes(z: f32, near: f32, far: f32) f32 {
+    // Linear mapping from [near, far] to [0.0, 1.0]
+    const t = (z - near) / (far - near);
+    return std.math.clamp(t, 0.0, 1.0);
+}
+
+/// Default depth mapping for 2D/orthographic rendering
+/// Uses default viewport planes: near=-10.0, far=10.0
 pub fn zToDepth(z: f32) f32 {
-    return std.math.clamp(0.5 - z * 0.5, 0.0, 1.0);
+    return zToDepthWithPlanes(z, -10.0, 10.0);
 }
 
 /// Allocate memory for a buffer with specified properties
