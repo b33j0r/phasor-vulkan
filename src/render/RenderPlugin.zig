@@ -69,6 +69,7 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         try commands.insertResource(ClearColor{});
     }
 
+    // Create render pass and framebuffers for traditional rendering
     const render_pass = try createRenderPass(vkd, swap.surface_format.format);
     errdefer vkd.destroyRenderPass(render_pass, null);
 

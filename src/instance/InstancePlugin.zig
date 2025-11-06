@@ -60,7 +60,7 @@ fn init_system(r_window: ResOpt(Window), r_res: ResMut(InstanceResource), r_allo
             .application_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
             .p_engine_name = app_name,
             .engine_version = @bitCast(vk.makeApiVersion(0, 0, 1, 0)),
-            .api_version = @bitCast(vk.API_VERSION_1_2),
+            .api_version = @bitCast(vk.API_VERSION_1_3),
         },
         .enabled_extension_count = @intCast(total),
         .pp_enabled_extension_names = ext_list.ptr,

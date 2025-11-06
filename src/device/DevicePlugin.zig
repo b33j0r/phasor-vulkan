@@ -48,9 +48,25 @@ fn init_system(commands: *Commands, r_instance: ResOpt(InstanceResource), r_allo
         qci_count = 2;
     }
 
+    // Query Vulkan 1.3 features; enable if supported (but do not require)
+    var supported_vk13 = vk.PhysicalDeviceVulkan13Features{};
+    // PhysicalDeviceFeatures2 requires the nested `features` field; zero-init so Vulkan fills it in
+    var features2 = vk.PhysicalDeviceFeatures2{ .p_next = &supported_vk13, .features = .{} };
+    instance.getPhysicalDeviceFeatures2(candidate.pdev, &features2);
+
+    var requested_vk13: vk.PhysicalDeviceVulkan13Features = .{};
+    var p_next_any: ?*const anyopaque = null;
+    if (supported_vk13.dynamic_rendering == .true or supported_vk13.synchronization_2 == .true) {
+        // Request only what is supported
+        requested_vk13.dynamic_rendering = supported_vk13.dynamic_rendering;
+        requested_vk13.synchronization_2 = supported_vk13.synchronization_2;
+        p_next_any = &requested_vk13;
+    }
+
     const required_device_extensions = [_][*:0]const u8{ vk.extensions.khr_swapchain.name };
 
     const device_handle = try instance.createDevice(candidate.pdev, &.{
+        .p_next = p_next_any,
         .queue_create_info_count = qci_count,
         .p_queue_create_infos = &qci,
         .enabled_extension_count = required_device_extensions.len,
