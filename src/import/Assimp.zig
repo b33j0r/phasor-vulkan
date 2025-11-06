@@ -1,6 +1,6 @@
 const std = @import("std");
 const phasor_assimp = @import("phasor-assimp");
-const common = @import("phasor-model-common");
+const common = @import("phasor-vulkan-common");
 const components = @import("../components.zig");
 
 pub const MeshData = struct {

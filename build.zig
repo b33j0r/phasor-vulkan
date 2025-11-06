@@ -234,7 +234,7 @@ pub fn build(b: *std.Build) void {
     }
 
     // Common neutral model types shared between importer and engine
-    const phasor_model_common_mod = b.addModule("phasor-model-common", .{
+    const phasor_vulkan_common_mod = b.addModule("phasor-vulkan-common", .{
         .root_source_file = b.path("lib/common/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -250,7 +250,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "assimp", .module = assimp_mod },
-            .{ .name = "phasor-model-common", .module = phasor_model_common_mod },
+            .{ .name = "phasor-vulkan-common", .module = phasor_vulkan_common_mod },
         },
     });
 
@@ -267,7 +267,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "stb_truetype", .module = stb_truetype_mod },
             .{ .name = "stb_image", .module = stb_image_mod },
             // Import the common model types and the assimp importer for engine conversions
-            .{ .name = "phasor-model-common", .module = phasor_model_common_mod },
+            .{ .name = "phasor-vulkan-common", .module = phasor_vulkan_common_mod },
             .{ .name = "phasor-assimp", .module = phasor_assimp_mod },
         },
     });

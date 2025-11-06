@@ -2,7 +2,7 @@
 // Produces neutral ModelData (lib/common) suitable for conversion by the engine.
 const std = @import("std");
 const assimp = @import("assimp");
-const common = @import("phasor-model-common");
+const common = @import("phasor-vulkan-common");
 
 pub const ModelData = common.ModelData;
 

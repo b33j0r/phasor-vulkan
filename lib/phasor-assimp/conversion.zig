@@ -1,6 +1,6 @@
 const std = @import("std");
 const assimp = @import("assimp");
-const common = @import("phasor-model-common");
+const common = @import("phasor-vulkan-common");
 
 const c = assimp.c;
 
