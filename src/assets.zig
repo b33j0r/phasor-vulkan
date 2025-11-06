@@ -379,6 +379,282 @@ pub const Font = struct {
     }
 };
 
+/// Model asset for GLTF/GLB models
+pub const Model = struct {
+    path: [:0]const u8,
+
+    // Loaded data
+    mesh_data: []@import("import/Assimp.zig").MeshData = &.{},
+    textures: []Texture = &.{},
+
+    pub fn load(self: *Model, vkd: anytype, dev_res: *const DeviceResource, render_res: *const RenderResource, allocator: std.mem.Allocator) !void {
+        const phasor_assimp = @import("phasor-assimp");
+        const components = @import("components.zig");
+
+        // Load model data using assimp
+        var data = try phasor_assimp.loadGltfData(allocator, self.path);
+        defer data.deinit(allocator);
+
+        // Collect unique textures first
+        var texture_list: std.ArrayList(Texture) = .{};
+        defer texture_list.deinit(allocator);
+
+        var texture_map = std.StringHashMap(usize).init(allocator);
+        defer texture_map.deinit();
+
+        for (data.meshes) |*mi| {
+            if (mi.material.base_color_texture) |tex_data| {
+                if (tex_data.embedded_bytes) |bytes| {
+                    // Load embedded texture
+                    const tex_index = texture_list.items.len;
+                    var texture = Texture{
+                        .path = "",
+                        .width = tex_data.width,
+                        .height = tex_data.height,
+                    };
+
+                    try loadTextureFromBytes(&texture, bytes, tex_data.width, tex_data.height, vkd, dev_res, allocator);
+                    try texture_list.append(allocator, texture);
+                    _ = tex_index;
+                } else if (tex_data.path) |path| {
+                    // External texture file - check if already loaded
+                    if (!texture_map.contains(path)) {
+                        const tex_index = texture_list.items.len;
+                        var texture = Texture{ .path = path };
+                        try texture.load(vkd, dev_res, render_res, allocator);
+                        try texture_list.append(allocator, texture);
+                        try texture_map.put(path, tex_index);
+                    }
+                }
+            }
+        }
+
+        // Convert meshes to engine format
+        var mesh_list: std.ArrayList(@import("import/Assimp.zig").MeshData) = .{};
+        defer mesh_list.deinit(allocator);
+
+        for (data.meshes) |mi| {
+            // Convert vertices
+            const verts = try allocator.alloc(components.MeshVertex, mi.mesh.vertices.len);
+            errdefer allocator.free(verts);
+            for (mi.mesh.vertices, 0..) |v, i| {
+                verts[i] = .{
+                    .pos = v.pos,
+                    .normal = v.normal,
+                    .uv = v.uv,
+                    .color = v.color,
+                };
+            }
+
+            // Convert indices
+            const inds = try allocator.alloc(u32, mi.mesh.indices.len);
+            errdefer allocator.free(inds);
+            @memcpy(inds, mi.mesh.indices);
+
+            // Find texture for this material
+            var texture_ptr: ?*Texture = null;
+            if (mi.material.base_color_texture) |tex_data| {
+                if (tex_data.path) |path| {
+                    if (texture_map.get(path)) |tex_idx| {
+                        texture_ptr = &texture_list.items[tex_idx];
+                    }
+                } else if (tex_data.embedded_bytes != null) {
+                    // For now, embedded textures are loaded sequentially
+                    // More sophisticated mapping would be needed for multiple embedded textures
+                    if (texture_list.items.len > 0) {
+                        texture_ptr = &texture_list.items[texture_list.items.len - 1];
+                    }
+                }
+            }
+
+            const mat = components.Material{
+                .color = mi.material.base_color,
+                .texture = texture_ptr,
+            };
+
+            const transform = components.Transform3d{
+                .translation = mi.transform.translation,
+                .rotation = mi.transform.rotation,
+                .scale = mi.transform.scale,
+            };
+
+            const name = if (mi.name) |n| try allocator.dupe(u8, n) else null;
+
+            try mesh_list.append(allocator, .{
+                .mesh = .{ .vertices = verts, .indices = inds },
+                .material = mat,
+                .transform = transform,
+                .name = name,
+            });
+        }
+
+        self.mesh_data = try mesh_list.toOwnedSlice(allocator);
+        self.textures = try texture_list.toOwnedSlice(allocator);
+
+        std.log.info("Loaded model from path: {s} ({d} meshes, {d} textures)", .{ self.path, self.mesh_data.len, self.textures.len });
+    }
+
+    pub fn unload(self: *Model, vkd: anytype, allocator: std.mem.Allocator) !void {
+        // Unload textures
+        for (self.textures) |*tex| {
+            try tex.unload(vkd, allocator);
+        }
+        if (self.textures.len > 0) {
+            allocator.free(self.textures);
+            self.textures = &.{};
+        }
+
+        // Free mesh data
+        for (self.mesh_data) |*m| {
+            allocator.free(@constCast(m.mesh.vertices));
+            allocator.free(@constCast(m.mesh.indices));
+            if (m.name) |n| allocator.free(n);
+        }
+        if (self.mesh_data.len > 0) {
+            allocator.free(self.mesh_data);
+            self.mesh_data = &.{};
+        }
+
+        std.log.info("Unloaded model from path: {s}", .{self.path});
+    }
+};
+
+fn loadTextureFromBytes(texture: *Texture, bytes: []const u8, width: u32, height: u32, vkd: anytype, dev_res: *const DeviceResource, allocator: std.mem.Allocator) !void {
+    if (width == 0) {
+        // Compressed embedded texture - decode using zigimg
+        var img = try zigimg.Image.fromMemory(allocator, bytes);
+        defer img.deinit(allocator);
+
+        texture.width = @intCast(img.width);
+        texture.height = @intCast(img.height);
+
+        // Get pixel data as RGBA8
+        const pixel_count = img.width * img.height;
+        const rgba_data = try allocator.alloc(u8, pixel_count * 4);
+        defer allocator.free(rgba_data);
+
+        // Convert pixels to RGBA8
+        var i: usize = 0;
+        var pixels = img.iterator();
+        while (pixels.next()) |pixel| : (i += 4) {
+            // Convert float color to u8
+            rgba_data[i] = @intFromFloat(pixel.r * 255.0);
+            rgba_data[i + 1] = @intFromFloat(pixel.g * 255.0);
+            rgba_data[i + 2] = @intFromFloat(pixel.b * 255.0);
+            rgba_data[i + 3] = @intFromFloat(pixel.a * 255.0);
+        }
+
+        try uploadTextureData(texture, rgba_data, vkd, dev_res);
+    } else {
+        // Raw RGBA8 pixels
+        texture.width = width;
+        texture.height = height;
+        try uploadTextureData(texture, bytes, vkd, dev_res);
+    }
+}
+
+fn uploadTextureData(texture: *Texture, rgba_data: []const u8, vkd: anytype, dev_res: *const DeviceResource) !void {
+    const image_size: vk.DeviceSize = @intCast(rgba_data.len);
+
+    // Create staging buffer
+    const staging_buffer = try vkd.createBuffer(&.{
+        .size = image_size,
+        .usage = .{ .transfer_src_bit = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    defer vkd.destroyBuffer(staging_buffer, null);
+
+    const mem_reqs = vkd.getBufferMemoryRequirements(staging_buffer);
+    const staging_memory = try utils.allocateMemory(vkd, dev_res, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+    defer vkd.freeMemory(staging_memory, null);
+
+    try vkd.bindBufferMemory(staging_buffer, staging_memory, 0);
+
+    // Copy pixel data to staging buffer
+    {
+        const data = try vkd.mapMemory(staging_memory, 0, image_size, .{});
+        defer vkd.unmapMemory(staging_memory);
+
+        const dst: [*]u8 = @ptrCast(@alignCast(data));
+        @memcpy(dst[0..rgba_data.len], rgba_data);
+    }
+
+    // Create image
+    const image = try vkd.createImage(&.{
+        .image_type = .@"2d",
+        .format = .r8g8b8a8_srgb,
+        .extent = .{
+            .width = texture.width,
+            .height = texture.height,
+            .depth = 1,
+        },
+        .mip_levels = 1,
+        .array_layers = 1,
+        .samples = .{ .@"1_bit" = true },
+        .tiling = .optimal,
+        .usage = .{ .transfer_dst_bit = true, .sampled_bit = true },
+        .sharing_mode = .exclusive,
+        .initial_layout = .undefined,
+    }, null);
+    errdefer vkd.destroyImage(image, null);
+
+    const img_mem_reqs = vkd.getImageMemoryRequirements(image);
+    const image_memory = try utils.allocateMemory(vkd, dev_res, img_mem_reqs, .{ .device_local_bit = true });
+    errdefer vkd.freeMemory(image_memory, null);
+
+    try vkd.bindImageMemory(image, image_memory, 0);
+
+    // Transition image layout and copy from staging buffer
+    try utils.transitionImageLayout(vkd, dev_res, image, .undefined, .transfer_dst_optimal);
+    try utils.copyBufferToImage(vkd, dev_res, staging_buffer, image, texture.width, texture.height);
+    try utils.transitionImageLayout(vkd, dev_res, image, .transfer_dst_optimal, .shader_read_only_optimal);
+
+    // Create image view
+    const image_view = try vkd.createImageView(&.{
+        .image = image,
+        .view_type = .@"2d",
+        .format = .r8g8b8a8_srgb,
+        .components = .{
+            .r = .identity,
+            .g = .identity,
+            .b = .identity,
+            .a = .identity,
+        },
+        .subresource_range = .{
+            .aspect_mask = .{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    }, null);
+    errdefer vkd.destroyImageView(image_view, null);
+
+    // Create sampler
+    const sampler = try vkd.createSampler(&.{
+        .mag_filter = .linear,
+        .min_filter = .linear,
+        .address_mode_u = .repeat,
+        .address_mode_v = .repeat,
+        .address_mode_w = .repeat,
+        .anisotropy_enable = .false,
+        .max_anisotropy = 1.0,
+        .border_color = .int_opaque_black,
+        .unnormalized_coordinates = .false,
+        .compare_enable = .false,
+        .compare_op = .always,
+        .mipmap_mode = .linear,
+        .mip_lod_bias = 0.0,
+        .min_lod = 0.0,
+        .max_lod = 0.0,
+    }, null);
+
+    texture.image = image;
+    texture.image_view = image_view;
+    texture.memory = image_memory;
+    texture.sampler = sampler;
+}
+
 /// Shader asset for custom shaders
 pub const Shader = struct {
     vert_spv: []const u8,

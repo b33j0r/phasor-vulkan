@@ -10,14 +10,14 @@ const Commands = phasor_ecs.Commands;
 
 // Define assets for the model_import example
 const ModelImportAssets = struct {
+    box_model: phasor_vulkan.Model = .{ .path = "examples/model_import/BoxTextured.gltf" },
     debug_uv_shader: phasor_vulkan.Shader = .{
         .vert_spv = &model_import_shaders.debug_uv_vert,
         .frag_spv = &model_import_shaders.debug_uv_frag,
     },
 };
 
-fn setup_scene(mut_commands: *phasor_ecs.Commands, assets: phasor_ecs.Res(ModelImportAssets), r_allocator: phasor_ecs.Res(phasor_vulkan.Allocator)) !void {
-    const allocator = r_allocator.ptr.allocator;
+fn setup_scene(mut_commands: *phasor_ecs.Commands, assets: phasor_ecs.Res(ModelImportAssets)) !void {
 
     // Camera with orbit controller (same as cube example)
     _ = try mut_commands.createEntity(.{
@@ -37,29 +37,23 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands, assets: phasor_ecs.Res(ModelI
         },
     });
 
-    // Load simple textured box (GLTF with embedded texture) for verification
-    const model_path: [:0]const u8 = "examples/model_import/BoxTextured.gltf";
-    const model = try phasor_vulkan.loadGltf(allocator, model_path);
-    std.debug.print("Loaded model with {d} meshes\n", .{model.meshes.len});
+    // Spawn entities for each mesh in the loaded model
+    const model = &assets.ptr.box_model;
 
-    // Spawn entities for each mesh
-    for (model.meshes) |mesh_data| {
-        std.debug.print("Mesh: {d} vertices, {d} indices\n", .{ mesh_data.mesh.vertices.len, mesh_data.mesh.indices.len });
-        std.debug.print("First 3 verts: [{d:.2},{d:.2},{d:.2}] [{d:.2},{d:.2},{d:.2}] [{d:.2},{d:.2},{d:.2}]\n", .{
-            mesh_data.mesh.vertices[0].pos.x, mesh_data.mesh.vertices[0].pos.y, mesh_data.mesh.vertices[0].pos.z,
-            mesh_data.mesh.vertices[1].pos.x, mesh_data.mesh.vertices[1].pos.y, mesh_data.mesh.vertices[1].pos.z,
-            mesh_data.mesh.vertices[2].pos.x, mesh_data.mesh.vertices[2].pos.y, mesh_data.mesh.vertices[2].pos.z,
-        });
-        std.debug.print("First tri indices: [{d}, {d}, {d}]\n", .{
-            mesh_data.mesh.indices[0], mesh_data.mesh.indices[1], mesh_data.mesh.indices[2],
-        });
+    std.debug.print("Model loaded with {d} meshes, {d} textures\n", .{ model.mesh_data.len, model.textures.len });
+
+    for (model.mesh_data) |mesh_data| {
+        std.debug.print("Spawning mesh: {d} vertices, {d} indices\n", .{ mesh_data.mesh.vertices.len, mesh_data.mesh.indices.len });
+        if (mesh_data.material.texture) |tex| {
+            std.debug.print("  Has texture: {}x{}\n", .{ tex.width, tex.height });
+        } else {
+            std.debug.print("  No texture\n", .{});
+        }
 
         _ = try mut_commands.createEntity(.{
             mesh_data.mesh,
             mesh_data.material,
-            phasor_vulkan.CustomShader{
-                .shader = &assets.ptr.debug_uv_shader,
-            },
+            // phasor_vulkan.CustomShader{ .shader = &assets.ptr.debug_uv_shader },
             phasor_vulkan.Transform3d{
                 .translation = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
                 .rotation = .{ .x = 0.0, .y = 0.0, .z = 0.0 },
@@ -142,7 +136,11 @@ pub fn main() !u8 {
     const fps_controller_plugin = phasor_vulkan.FpsControllerPlugin{};
     try app.addPlugin(&fps_controller_plugin);
 
-    try app.addSystem("Startup", setup_scene);
+    // Add a custom schedule after VkInitEnd to ensure assets are loaded
+    _ = try app.addSchedule("SetupScene");
+    _ = try app.scheduleBetween("SetupScene", "VkInitEnd", "Startup");
+
+    try app.addSystem("SetupScene", setup_scene);
     try app.addSystem("Update", orbit_camera_system);
 
     return try app.run();

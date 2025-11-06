@@ -19,6 +19,7 @@ pub const Texture = assets.Texture;
 pub const Texture2D = assets.Texture; // Alias for use in asset structs
 pub const Font = assets.Font;
 pub const Shader = assets.Shader;
+pub const Model = assets.Model;
 
 // Export components
 const components = @import("components.zig");
@@ -66,7 +67,7 @@ const parent_plugin = @import("ParentPlugin.zig");
 pub const Parent = parent_plugin.Parent;
 pub const LocalTransform3d = parent_plugin.LocalTransform3d;
 
-// Assimp model import exports (high-level API)
-pub const Model = @import("import/Assimp.zig").Model;
+// Assimp model import exports (high-level API for manual loading)
+pub const LoadedModel = @import("import/Assimp.zig").Model;
 pub const loadGlb = @import("import/Assimp.zig").loadGlb;
 pub const loadGltf = @import("import/Assimp.zig").loadGltf;
