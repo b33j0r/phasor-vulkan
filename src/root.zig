@@ -1,4 +1,6 @@
 pub const AllocatorPlugin = @import("AllocatorPlugin.zig");
+pub const Allocator = AllocatorPlugin.Allocator;
+
 pub const VulkanPlugin = @import("VulkanPlugin.zig");
 pub const TimePlugin = @import("TimePlugin.zig");
 pub const FpsControllerPlugin = @import("FpsControllerPlugin.zig");
@@ -63,3 +65,8 @@ pub const ElapsedTime = time_plugin.ElapsedTime;
 const parent_plugin = @import("ParentPlugin.zig");
 pub const Parent = parent_plugin.Parent;
 pub const LocalTransform3d = parent_plugin.LocalTransform3d;
+
+// Assimp model import exports (high-level API)
+pub const Model = @import("import/Assimp.zig").Model;
+pub const loadGlb = @import("import/Assimp.zig").loadGlb;
+pub const loadGltf = @import("import/Assimp.zig").loadGltf;

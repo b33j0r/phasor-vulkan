@@ -197,6 +197,52 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Optional configuration for Assimp include/lib directories
+    const assimp_include_dir = b.option([]const u8, "assimp-include-dir", "Path to Assimp headers (if not discoverable)");
+    // const assimp_lib_dir = b.option([]const u8, "assimp-lib-dir", "Path to Assimp library directory (if not on default search paths)");
+
+    // Assimp thin wrapper module (C headers only)
+    const assimp_mod = b.addModule("assimp", .{
+        .root_source_file = b.path("lib/assimp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    if (assimp_include_dir) |inc| {
+        assimp_mod.addIncludePath(.{ .cwd_relative = inc });
+    } else {
+        // Try to find Assimp via pkg-config
+        var code: u8 = undefined;
+        const pkg_config_result = b.runAllowFail(&.{ "pkg-config", "--cflags", "assimp" }, &code, .Ignore) catch null;
+        if (pkg_config_result) |output| {
+            const trimmed = std.mem.trim(u8, output, " \n\r\t");
+            if (std.mem.startsWith(u8, trimmed, "-I")) {
+                const include_path = trimmed[2..];
+                assimp_mod.addIncludePath(.{ .cwd_relative = include_path });
+            }
+        }
+    }
+
+    // Common neutral model types shared between importer and engine
+    const phasor_model_common_mod = b.addModule("phasor-model-common", .{
+        .root_source_file = b.path("lib/common/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+        },
+    });
+
+    // High-level Assimp importer producing ModelData
+    const phasor_assimp_mod = b.addModule("phasor-assimp", .{
+        .root_source_file = b.path("lib/phasor-assimp/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "assimp", .module = assimp_mod },
+            .{ .name = "phasor-model-common", .module = phasor_model_common_mod },
+        },
+    });
+
     const phasor_vulkan_mod = b.addModule("phasor-vulkan", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -209,6 +255,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "glfw", .module = glfw_mod },
             .{ .name = "zigimg", .module = zigimg_mod },
             .{ .name = "stb_truetype", .module = stb_truetype_mod },
+            // Import the common model types and the assimp importer for engine conversions
+            .{ .name = "phasor-model-common", .module = phasor_model_common_mod },
+            .{ .name = "phasor-assimp", .module = phasor_assimp_mod },
         },
     });
 
@@ -438,26 +487,104 @@ pub fn build(b: *std.Build) void {
     warehouse_step.dependOn(&run_examples_warehouse.step);
 
     b.installArtifact(examples_warehouse);
+
+    //
+    // ─── MODEL IMPORT EXAMPLE (GLB/GLTF via Assimp) ────────────────
+    //
+    // Compile model_import-specific shaders
+    const model_import_shader_files = [_]ShaderFile{
+        .{ .src = "examples/model_import/shaders/debug_uv.vert", .dst = "debug_uv.vert.spv" },
+        .{ .src = "examples/model_import/shaders/debug_uv.frag", .dst = "debug_uv.frag.spv" },
+    };
+
+    var model_import_shader_outputs: [model_import_shader_files.len]std.Build.LazyPath = undefined;
+    inline for (model_import_shader_files, 0..) |shader, i| {
+        const compile_cmd = b.addSystemCommand(&.{"glslc"});
+        compile_cmd.addFileArg(b.path(shader.src));
+        compile_cmd.addArg("-o");
+        const output = compile_cmd.addOutputFileArg(std.fs.path.basename(shader.dst));
+        compile_shaders.dependOn(&compile_cmd.step);
+        model_import_shader_outputs[i] = output;
+    }
+
+    // Generate model_import shader imports module
+    const write_model_import_shaders = b.addWriteFiles();
+    const model_import_shader_imports_path = write_model_import_shaders.add("model_import_shaders.zig",
+        \\// Auto-generated model_import shader imports
+        \\pub const debug_uv_vert align(@alignOf(u32)) = @embedFile("debug_uv.vert.spv").*;
+        \\pub const debug_uv_frag align(@alignOf(u32)) = @embedFile("debug_uv.frag.spv").*;
+        \\
+    );
+
+    inline for (model_import_shader_files, 0..) |shader, i| {
+        _ = write_model_import_shaders.addCopyFile(model_import_shader_outputs[i], std.fs.path.basename(shader.dst));
+    }
+
+    const examples_model_import_mod = b.addModule("examples-model-import", .{
+        .root_source_file = b.path("examples/model_import/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phasor-vulkan", .module = phasor_vulkan_mod },
+            .{ .name = "phasor-glfw", .module = phasor_glfw_mod },
+            .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
+            .{ .name = "phasor-common", .module = phasor_common_mod },
+        },
+    });
+
+    // Add model_import shaders import to the model_import example
+    examples_model_import_mod.addImport("model_import_shaders", b.createModule(.{
+        .root_source_file = model_import_shader_imports_path,
+    }));
+
+    const examples_model_import = b.addExecutable(.{
+        .name = "examples-model-import",
+        .root_module = examples_model_import_mod,
+    });
+
+    examples_model_import.linkLibC();
+    examples_model_import.linkLibrary(glfw_lib);
+    examples_model_import.linkSystemLibrary("vulkan");
+    // Link Assimp and C++ stdlib (Assimp is a C++ library)
+    examples_model_import.linkSystemLibrary("assimp");
+    if (target.result.os.tag.isDarwin()) {
+        examples_model_import.linkFramework("Cocoa");
+        examples_model_import.linkFramework("IOKit");
+        examples_model_import.linkFramework("CoreVideo");
+        examples_model_import.linkSystemLibrary("objc");
+        examples_model_import.linkSystemLibrary("c++");
+    } else if (target.result.os.tag == .linux) {
+        examples_model_import.linkSystemLibrary("stdc++");
+    } else if (target.result.os.tag == .windows) {
+        // On Windows, assuming shared assimp is available as "assimp"
+        // The MSVC C++ runtime is linked automatically by Zig
+    }
+
+    const run_examples_model_import = b.addRunArtifact(examples_model_import);
+    const model_import_step = b.step("model_import", "Run model import example");
+    model_import_step.dependOn(&run_examples_model_import.step);
+
+    b.installArtifact(examples_model_import);
 }
 
 const ShaderFile = struct { src: []const u8, dst: []const u8 };
 
 fn generateShaderImports() []const u8 {
     // Simple static generation - shaders are embedded by filename only (in same dir as this file)
-    return
-        \\// Auto-generated shader imports
-        \\// DO NOT EDIT - generated by build.zig
-        \\
-        \\pub const triangle_vert align(@alignOf(u32)) = @embedFile("triangle.vert.spv").*;
-        \\pub const triangle_frag align(@alignOf(u32)) = @embedFile("triangle.frag.spv").*;
-        \\pub const sprite_vert align(@alignOf(u32)) = @embedFile("sprite.vert.spv").*;
-        \\pub const sprite_frag align(@alignOf(u32)) = @embedFile("sprite.frag.spv").*;
-        \\pub const circle_vert align(@alignOf(u32)) = @embedFile("circle.vert.spv").*;
-        \\pub const circle_frag align(@alignOf(u32)) = @embedFile("circle.frag.spv").*;
-        \\pub const rectangle_vert align(@alignOf(u32)) = @embedFile("rectangle.vert.spv").*;
-        \\pub const rectangle_frag align(@alignOf(u32)) = @embedFile("rectangle.frag.spv").*;
-        \\pub const mesh_vert align(@alignOf(u32)) = @embedFile("mesh.vert.spv").*;
-        \\pub const mesh_frag align(@alignOf(u32)) = @embedFile("mesh.frag.spv").*;
-        \\
+    return 
+    \\// Auto-generated shader imports
+    \\// DO NOT EDIT - generated by build.zig
+    \\
+    \\pub const triangle_vert align(@alignOf(u32)) = @embedFile("triangle.vert.spv").*;
+    \\pub const triangle_frag align(@alignOf(u32)) = @embedFile("triangle.frag.spv").*;
+    \\pub const sprite_vert align(@alignOf(u32)) = @embedFile("sprite.vert.spv").*;
+    \\pub const sprite_frag align(@alignOf(u32)) = @embedFile("sprite.frag.spv").*;
+    \\pub const circle_vert align(@alignOf(u32)) = @embedFile("circle.vert.spv").*;
+    \\pub const circle_frag align(@alignOf(u32)) = @embedFile("circle.frag.spv").*;
+    \\pub const rectangle_vert align(@alignOf(u32)) = @embedFile("rectangle.vert.spv").*;
+    \\pub const rectangle_frag align(@alignOf(u32)) = @embedFile("rectangle.frag.spv").*;
+    \\pub const mesh_vert align(@alignOf(u32)) = @embedFile("mesh.vert.spv").*;
+    \\pub const mesh_frag align(@alignOf(u32)) = @embedFile("mesh.frag.spv").*;
+    \\
     ;
 }
