@@ -1,5 +1,6 @@
 const std = @import("std");
 const zigimg = @import("zigimg");
+const stb_image = @import("stb_image");
 const vk = @import("vulkan");
 const phasor_ecs = @import("phasor-ecs");
 const ResMut = phasor_ecs.ResMut;
@@ -69,35 +70,35 @@ pub const Texture = struct {
     height: u32 = 0,
 
     pub fn load(self: *Texture, vkd: anytype, dev_res: *const DeviceResource, _: *const RenderResource, allocator: std.mem.Allocator) !void {
-        // Load PNG using zigimg
-        var file = try std.fs.cwd().openFile(self.path, .{});
-        defer file.close();
+        // Load image using stb_image
+        var width: c_int = undefined;
+        var height: c_int = undefined;
+        var channels: c_int = undefined;
 
-        // Allocate a read buffer for zigimg
-        const read_buffer = try allocator.alloc(u8, 1024 * 1024); // 1MB buffer
-        defer allocator.free(read_buffer);
+        // Load image as RGBA (4 channels)
+        const data_ptr = stb_image.c.stbi_load(
+            self.path.ptr,
+            &width,
+            &height,
+            &channels,
+            4, // Force RGBA
+        );
 
-        var img = try zigimg.Image.fromFile(allocator, file, read_buffer);
-        defer img.deinit(allocator);
+        if (data_ptr == null) {
+            return error.ImageLoadFailed;
+        }
+        defer stb_image.c.stbi_image_free(data_ptr);
 
-        self.width = @intCast(img.width);
-        self.height = @intCast(img.height);
+        self.width = @intCast(width);
+        self.height = @intCast(height);
 
-        // Get pixel data as RGBA8
-        const pixel_count = img.width * img.height;
+        // Copy pixel data to Zig-managed memory
+        const pixel_count: usize = @intCast(width * height);
         const rgba_data = try allocator.alloc(u8, pixel_count * 4);
         defer allocator.free(rgba_data);
 
-        // Convert pixels to RGBA8
-        var i: usize = 0;
-        var pixels = img.iterator();
-        while (pixels.next()) |pixel| : (i += 4) {
-            // Convert float color to u8
-            rgba_data[i] = @intFromFloat(pixel.r * 255.0);
-            rgba_data[i + 1] = @intFromFloat(pixel.g * 255.0);
-            rgba_data[i + 2] = @intFromFloat(pixel.b * 255.0);
-            rgba_data[i + 3] = @intFromFloat(pixel.a * 255.0);
-        }
+        const src_data: [*]const u8 = @ptrCast(data_ptr);
+        @memcpy(rgba_data, src_data[0 .. pixel_count * 4]);
 
         const image_size: vk.DeviceSize = @intCast(rgba_data.len);
 
@@ -386,6 +387,7 @@ pub const Model = struct {
     // Loaded data
     mesh_data: []@import("import/Assimp.zig").MeshData = &.{},
     textures: []Texture = &.{},
+    texture_paths: [][:0]const u8 = &.{}, // Allocated texture paths to free on unload
 
     pub fn load(self: *Model, vkd: anytype, dev_res: *const DeviceResource, render_res: *const RenderResource, allocator: std.mem.Allocator) !void {
         const phasor_assimp = @import("phasor-assimp");
@@ -399,8 +401,14 @@ pub const Model = struct {
         var texture_list: std.ArrayList(Texture) = .{};
         defer texture_list.deinit(allocator);
 
+        var texture_path_list: std.ArrayList([:0]const u8) = .{};
+        defer texture_path_list.deinit(allocator);
+
         var texture_map = std.StringHashMap(usize).init(allocator);
         defer texture_map.deinit();
+
+        // Get the directory of the model file for resolving relative texture paths
+        const model_dir = std.fs.path.dirname(self.path) orelse ".";
 
         for (data.meshes) |*mi| {
             if (mi.material.base_color_texture) |tex_data| {
@@ -420,9 +428,13 @@ pub const Model = struct {
                     // External texture file - check if already loaded
                     if (!texture_map.contains(path)) {
                         const tex_index = texture_list.items.len;
-                        var texture = Texture{ .path = path };
+                        // Resolve texture path relative to model directory
+                        const texture_path = try std.fs.path.joinZ(allocator, &[_][]const u8{ model_dir, path });
+                        errdefer allocator.free(texture_path);
+                        var texture = Texture{ .path = texture_path };
                         try texture.load(vkd, dev_res, render_res, allocator);
                         try texture_list.append(allocator, texture);
+                        try texture_path_list.append(allocator, texture_path);
                         try texture_map.put(path, tex_index);
                     }
                 }
@@ -490,6 +502,7 @@ pub const Model = struct {
 
         self.mesh_data = try mesh_list.toOwnedSlice(allocator);
         self.textures = try texture_list.toOwnedSlice(allocator);
+        self.texture_paths = try texture_path_list.toOwnedSlice(allocator);
 
         std.log.info("Loaded model from path: {s} ({d} meshes, {d} textures)", .{ self.path, self.mesh_data.len, self.textures.len });
     }
@@ -502,6 +515,15 @@ pub const Model = struct {
         if (self.textures.len > 0) {
             allocator.free(self.textures);
             self.textures = &.{};
+        }
+
+        // Free allocated texture paths
+        for (self.texture_paths) |path| {
+            allocator.free(path);
+        }
+        if (self.texture_paths.len > 0) {
+            allocator.free(self.texture_paths);
+            self.texture_paths = &.{};
         }
 
         // Free mesh data
@@ -521,28 +543,35 @@ pub const Model = struct {
 
 fn loadTextureFromBytes(texture: *Texture, bytes: []const u8, width: u32, height: u32, vkd: anytype, dev_res: *const DeviceResource, allocator: std.mem.Allocator) !void {
     if (width == 0) {
-        // Compressed embedded texture - decode using zigimg
-        var img = try zigimg.Image.fromMemory(allocator, bytes);
-        defer img.deinit(allocator);
+        // Compressed embedded texture - decode using stb_image
+        var img_width: c_int = undefined;
+        var img_height: c_int = undefined;
+        var channels: c_int = undefined;
 
-        texture.width = @intCast(img.width);
-        texture.height = @intCast(img.height);
+        const data_ptr = stb_image.c.stbi_load_from_memory(
+            bytes.ptr,
+            @intCast(bytes.len),
+            &img_width,
+            &img_height,
+            &channels,
+            4, // Force RGBA
+        );
 
-        // Get pixel data as RGBA8
-        const pixel_count = img.width * img.height;
+        if (data_ptr == null) {
+            return error.ImageLoadFailed;
+        }
+        defer stb_image.c.stbi_image_free(data_ptr);
+
+        texture.width = @intCast(img_width);
+        texture.height = @intCast(img_height);
+
+        // Copy pixel data
+        const pixel_count: usize = @intCast(img_width * img_height);
         const rgba_data = try allocator.alloc(u8, pixel_count * 4);
         defer allocator.free(rgba_data);
 
-        // Convert pixels to RGBA8
-        var i: usize = 0;
-        var pixels = img.iterator();
-        while (pixels.next()) |pixel| : (i += 4) {
-            // Convert float color to u8
-            rgba_data[i] = @intFromFloat(pixel.r * 255.0);
-            rgba_data[i + 1] = @intFromFloat(pixel.g * 255.0);
-            rgba_data[i + 2] = @intFromFloat(pixel.b * 255.0);
-            rgba_data[i + 3] = @intFromFloat(pixel.a * 255.0);
-        }
+        const src_data: [*]const u8 = @ptrCast(data_ptr);
+        @memcpy(rgba_data, src_data[0 .. pixel_count * 4]);
 
         try uploadTextureData(texture, rgba_data, vkd, dev_res);
     } else {

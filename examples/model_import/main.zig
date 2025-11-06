@@ -11,6 +11,7 @@ const Commands = phasor_ecs.Commands;
 // Define assets for the model_import example
 const ModelImportAssets = struct {
     box_model: phasor_vulkan.Model = .{ .path = "examples/model_import/BoxTextured.gltf" },
+    sci_fi_model: phasor_vulkan.Model = .{ .path = "examples/model_import/SciFiHelmet/SciFiHelmet.gltf" },
     debug_uv_shader: phasor_vulkan.Shader = .{
         .vert_spv = &model_import_shaders.debug_uv_vert,
         .frag_spv = &model_import_shaders.debug_uv_frag,
@@ -38,7 +39,7 @@ fn setup_scene(mut_commands: *phasor_ecs.Commands, assets: phasor_ecs.Res(ModelI
     });
 
     // Spawn entities for each mesh in the loaded model
-    const model = &assets.ptr.box_model;
+    const model = &assets.ptr.sci_fi_model;
 
     std.debug.print("Model loaded with {d} meshes, {d} textures\n", .{ model.mesh_data.len, model.textures.len });
 

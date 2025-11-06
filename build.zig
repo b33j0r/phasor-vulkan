@@ -137,6 +137,24 @@ pub fn build(b: *std.Build) void {
     });
     stb_truetype_mod.addIncludePath(stb_include);
 
+    // stb_image for image loading
+    const stb_image_lib = b.addLibrary(.{
+        .name = "stb_image",
+        .linkage = .static,
+        .root_module = stb_lib_mod,
+    });
+    stb_image_lib.addCSourceFile(.{
+        .file = b.path("lib/stb_image/stb_image.c"),
+        .flags = &.{},
+    });
+
+    const stb_image_mod = b.addModule("stb_image", .{
+        .root_source_file = b.path("lib/stb_image/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stb_image_mod.addIncludePath(stb_include);
+
     // Vulkan
     const vulkan_headers_dep = b.dependency("vulkan_headers", .{});
 
@@ -255,6 +273,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "glfw", .module = glfw_mod },
             .{ .name = "zigimg", .module = zigimg_mod },
             .{ .name = "stb_truetype", .module = stb_truetype_mod },
+            .{ .name = "stb_image", .module = stb_image_mod },
             // Import the common model types and the assimp importer for engine conversions
             .{ .name = "phasor-model-common", .module = phasor_model_common_mod },
             .{ .name = "phasor-assimp", .module = phasor_assimp_mod },
@@ -544,6 +563,7 @@ pub fn build(b: *std.Build) void {
 
     examples_model_import.linkLibC();
     examples_model_import.linkLibrary(glfw_lib);
+    examples_model_import.linkLibrary(stb_image_lib);
     examples_model_import.linkSystemLibrary("vulkan");
     // Link Assimp and C++ stdlib (Assimp is a C++ library)
     examples_model_import.linkSystemLibrary("assimp");
