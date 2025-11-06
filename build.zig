@@ -22,13 +22,6 @@ pub fn build(b: *std.Build) void {
     const phasor_common_mod = phasor_ecs_dep.module("phasor-common");
     const phasor_phases_mod = phasor_ecs_dep.module("phasor-phases");
 
-    // zigimg for PNG loading
-    const zigimg_dep = b.dependency("zigimg", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zigimg_mod = zigimg_dep.module("zigimg");
-
     // stb_truetype for font rendering
     const stb_dep = b.dependency("stb", .{
         .target = target,
@@ -271,7 +264,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phasor-ecs", .module = phasor_ecs_mod },
             .{ .name = "phasor-common", .module = phasor_common_mod },
             .{ .name = "glfw", .module = glfw_mod },
-            .{ .name = "zigimg", .module = zigimg_mod },
             .{ .name = "stb_truetype", .module = stb_truetype_mod },
             .{ .name = "stb_image", .module = stb_image_mod },
             // Import the common model types and the assimp importer for engine conversions
@@ -284,6 +276,7 @@ pub fn build(b: *std.Build) void {
     phasor_vulkan_mod.addImport("shader_imports", b.createModule(.{
         .root_source_file = shader_imports_path,
     }));
+    phasor_vulkan_mod.linkLibrary(stb_image_lib);
 
     //
     // ─── EXAMPLES ──────────────────────────────────────────────────
@@ -563,7 +556,6 @@ pub fn build(b: *std.Build) void {
 
     examples_model_import.linkLibC();
     examples_model_import.linkLibrary(glfw_lib);
-    examples_model_import.linkLibrary(stb_image_lib);
     examples_model_import.linkSystemLibrary("vulkan");
     // Link Assimp and C++ stdlib (Assimp is a C++ library)
     examples_model_import.linkSystemLibrary("assimp");

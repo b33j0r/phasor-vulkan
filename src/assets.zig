@@ -1,5 +1,4 @@
 const std = @import("std");
-const zigimg = @import("zigimg");
 const stb_image = @import("stb_image");
 const vk = @import("vulkan");
 const phasor_ecs = @import("phasor-ecs");

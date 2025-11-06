@@ -438,7 +438,7 @@ pub fn main() !u8 {
     // Add ship classes resource
     try app.insertResource(ShipClasses{});
 
-    // Add asset plugin - loads PNG textures using zigimg
+    // Add asset plugin - loads PNG textures using stb_image
     var asset_plugin = phasor_vulkan.AssetPlugin(GameAssets){};
     try app.addPlugin(&asset_plugin);
 
