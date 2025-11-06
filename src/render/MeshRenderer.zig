@@ -88,8 +88,8 @@ pub fn init(
     const pipeline_default = try createPipeline(vkd, pipeline_layout, color_format, depth_format, extent);
     errdefer vkd.destroyPipeline(pipeline_default, null);
 
-    const max_vertices: u32 = 10000;
-    const max_indices: u32 = 30000;
+    const max_vertices: u32 = 100000; // Increased to support larger models
+    const max_indices: u32 = 300000;
     const vertex_buffer_size = @sizeOf(components.MeshVertex) * max_vertices;
     const index_buffer_size = @sizeOf(u32) * max_indices;
 
@@ -236,10 +236,20 @@ pub fn collect(
 
     // Write mesh data directly to mapped memory
     if (all_vertices.items.len > 0) {
+        // Check if we exceed buffer capacity
+        if (all_vertices.items.len > resources.max_vertices) {
+            std.log.err("Vertex buffer overflow: {d} vertices exceeds max {d}", .{ all_vertices.items.len, resources.max_vertices });
+            return error.VertexBufferOverflow;
+        }
         try ctx.writeToMappedBuffer(vkd, components.MeshVertex, resources.vertex_memory, all_vertices.items);
     }
 
     if (all_indices.items.len > 0) {
+        // Check if we exceed buffer capacity
+        if (all_indices.items.len > resources.max_indices) {
+            std.log.err("Index buffer overflow: {d} indices exceeds max {d}", .{ all_indices.items.len, resources.max_indices });
+            return error.IndexBufferOverflow;
+        }
         try ctx.writeToMappedBuffer(vkd, u32, resources.index_memory, all_indices.items);
     }
 
