@@ -9,10 +9,12 @@ const components = @import("../components.zig");
 
 /// Creates a graphics pipeline for mesh rendering with vertex colors
 /// Uses MeshVertex format from components.zig
+/// Uses dynamic rendering (Vulkan 1.3) instead of render pass
 pub fn createMeshPipeline(
     vkd: anytype,
     layout: vk.PipelineLayout,
-    render_pass: vk.RenderPass,
+    color_format: vk.Format,
+    depth_format: vk.Format,
     extent: vk.Extent2D,
     vert_spv: []const u8,
     frag_spv: []const u8,
@@ -148,7 +150,17 @@ pub fn createMeshPipeline(
         .blend_constants = [_]f32{ 0, 0, 0, 0 },
     };
 
+    // Dynamic rendering info (Vulkan 1.3)
+    var rendering_info = vk.PipelineRenderingCreateInfo{
+        .view_mask = 0,
+        .color_attachment_count = 1,
+        .p_color_attachment_formats = @ptrCast(&color_format),
+        .depth_attachment_format = depth_format,
+        .stencil_attachment_format = .undefined,
+    };
+
     const pipeline_info = vk.GraphicsPipelineCreateInfo{
+        .p_next = &rendering_info,
         .stage_count = 2,
         .p_stages = &shader_stages,
         .p_vertex_input_state = &vertex_input_info,
@@ -160,7 +172,7 @@ pub fn createMeshPipeline(
         .p_color_blend_state = &color_blending,
         .p_dynamic_state = null,
         .layout = layout,
-        .render_pass = render_pass,
+        .render_pass = .null_handle,
         .subpass = 0,
         .base_pipeline_handle = .null_handle,
         .base_pipeline_index = -1,

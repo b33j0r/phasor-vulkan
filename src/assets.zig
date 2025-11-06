@@ -407,7 +407,7 @@ pub const Shader = struct {
         errdefer vkd.destroyPipelineLayout(pipeline_layout, null);
 
         // Create pipeline using the provided shader SPIR-V
-        const pipeline = try ShaderPipeline.createMeshPipeline(vkd, pipeline_layout, render_res.render_pass, render_res.swapchain_extent, self.vert_spv, self.frag_spv);
+        const pipeline = try ShaderPipeline.createMeshPipeline(vkd, pipeline_layout, render_res.color_format, render_res.depth_format, render_res.swapchain_extent, self.vert_spv, self.frag_spv);
         errdefer vkd.destroyPipeline(pipeline, null);
 
         self.pipeline_layout = pipeline_layout;

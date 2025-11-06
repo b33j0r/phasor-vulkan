@@ -33,7 +33,8 @@ pub const MeshResources = struct {
 pub fn init(
     vkd: anytype,
     dev_res: anytype,
-    render_pass: vk.RenderPass,
+    color_format: vk.Format,
+    depth_format: vk.Format,
     extent: vk.Extent2D,
     allocator: std.mem.Allocator,
 ) !MeshResources {
@@ -84,7 +85,7 @@ pub fn init(
     }, null);
     errdefer vkd.destroyPipelineLayout(pipeline_layout, null);
 
-    const pipeline_default = try createPipeline(vkd, pipeline_layout, render_pass, extent);
+    const pipeline_default = try createPipeline(vkd, pipeline_layout, color_format, depth_format, extent);
     errdefer vkd.destroyPipeline(pipeline_default, null);
 
     const max_vertices: u32 = 10000;
@@ -497,7 +498,8 @@ fn dot(a: phasor_common.Vec3, b: phasor_common.Vec3) f32 {
 fn createPipeline(
     vkd: anytype,
     layout: vk.PipelineLayout,
-    render_pass: vk.RenderPass,
+    color_format: vk.Format,
+    depth_format: vk.Format,
     extent: vk.Extent2D,
 ) !vk.Pipeline {
     const shaders = @import("shader_imports");
@@ -634,6 +636,14 @@ fn createPipeline(
         },
     };
 
+    var rendering_info = vk.PipelineRenderingCreateInfo{
+        .view_mask = 0,
+        .color_attachment_count = 1,
+        .p_color_attachment_formats = @ptrCast(&color_format),
+        .depth_attachment_format = depth_format,
+        .stencil_attachment_format = .undefined,
+    };
+
     const pipeline_info = vk.GraphicsPipelineCreateInfo{
         .stage_count = shader_stages.len,
         .p_stages = &shader_stages,
@@ -646,10 +656,11 @@ fn createPipeline(
         .p_color_blend_state = &color_blending,
         .p_dynamic_state = null,
         .layout = layout,
-        .render_pass = render_pass,
+        .render_pass = .null_handle,
         .subpass = 0,
         .base_pipeline_handle = .null_handle,
         .base_pipeline_index = -1,
+        .p_next = &rendering_info,
     };
 
     var pipeline: vk.Pipeline = undefined;

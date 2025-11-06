@@ -36,11 +36,13 @@ pub const RenderResource = struct {
     last_log_frame: u64 = 0,
 
     // Core Vulkan resources
-    render_pass: vk.RenderPass,
     swapchain_extent: vk.Extent2D,
-    framebuffers: []vk.Framebuffer,
     cmd_pool: vk.CommandPool,
     cmd_buffers: []vk.CommandBuffer,
+
+    // Format information for dynamic rendering
+    color_format: vk.Format,
+    depth_format: vk.Format,
 
     // Synchronization
     image_available: []vk.Semaphore,
@@ -69,12 +71,9 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
         try commands.insertResource(ClearColor{});
     }
 
-    // Create render pass and framebuffers for traditional rendering
-    const render_pass = try createRenderPass(vkd, swap.surface_format.format);
-    errdefer vkd.destroyRenderPass(render_pass, null);
-
-    const framebuffers = try createFramebuffers(allocator, vkd, render_pass, swap);
-    errdefer destroyFramebuffers(vkd, allocator, framebuffers);
+    // Store formats for dynamic rendering
+    const color_format = swap.surface_format.format;
+    const depth_format = vk.Format.d32_sfloat;
 
     const cmd_pool = try vkd.createCommandPool(&.{
         .queue_family_index = dev_res.graphics_family_index.?,
@@ -88,28 +87,28 @@ fn init_system(commands: *Commands, r_device: ResOpt(DeviceResource), r_swap: Re
     const sync = try createSyncObjects(allocator, vkd, @intCast(swap.views.len));
     errdefer destroySyncObjects(vkd, allocator, sync);
 
-    // Initialize all shape renderers
-    const triangle_resources = try TriangleRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
+    // Initialize all shape renderers with formats instead of render_pass
+    const triangle_resources = try TriangleRenderer.init(vkd, dev_res, color_format, depth_format, swap.extent, allocator);
     errdefer TriangleRenderer.deinit(vkd, &triangle_resources);
 
-    const sprite_resources = try SpriteRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
+    const sprite_resources = try SpriteRenderer.init(vkd, dev_res, color_format, depth_format, swap.extent, allocator);
     errdefer SpriteRenderer.deinit(vkd, &sprite_resources);
 
-    const circle_resources = try CircleRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
+    const circle_resources = try CircleRenderer.init(vkd, dev_res, color_format, depth_format, swap.extent, allocator);
     errdefer CircleRenderer.deinit(vkd, &circle_resources);
 
-    const rectangle_resources = try RectangleRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
+    const rectangle_resources = try RectangleRenderer.init(vkd, dev_res, color_format, depth_format, swap.extent, allocator);
     errdefer RectangleRenderer.deinit(vkd, &rectangle_resources);
 
-    const mesh_resources = try MeshRenderer.init(vkd, dev_res, render_pass, swap.extent, allocator);
+    const mesh_resources = try MeshRenderer.init(vkd, dev_res, color_format, depth_format, swap.extent, allocator);
     errdefer MeshRenderer.deinit(vkd, &mesh_resources);
 
     try commands.insertResource(RenderResource{
         .gpa = gpa,
         .allocator = allocator,
-        .render_pass = render_pass,
+        .color_format = color_format,
+        .depth_format = depth_format,
         .swapchain_extent = swap.extent,
-        .framebuffers = framebuffers,
         .cmd_pool = cmd_pool,
         .cmd_buffers = cmd_buffers,
         .image_available = sync.image_available,
@@ -304,19 +303,76 @@ fn recordCommandBuffer(
     vkd.cmdSetViewport(cmdbuf, 0, 1, @ptrCast(&viewport));
     vkd.cmdSetScissor(cmdbuf, 0, 1, @ptrCast(&scissor));
 
-    const clear_f32 = phasor_common.Color.F32.fromColor(clear_color.color);
-    const clear_values = [_]vk.ClearValue{
-        .{ .color = .{ .float_32 = .{ clear_f32.r, clear_f32.g, clear_f32.b, clear_f32.a } } },
-        .{ .depth_stencil = .{ .depth = 0.0, .stencil = 0 } }, // reverse-Z: clear to 0
+    // Transition swapchain image to color attachment optimal
+    const pre_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .color_attachment_output_bit = true },
+        .dst_stage_mask = .{ .color_attachment_output_bit = true },
+        .old_layout = .undefined,
+        .new_layout = .color_attachment_optimal,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = swap.images[img_idx],
+        .subresource_range = .{
+            .aspect_mask = .{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
     };
 
-    vkd.cmdBeginRenderPass(cmdbuf, &.{
-        .render_pass = rr.render_pass,
-        .framebuffer = rr.framebuffers[img_idx],
-        .render_area = .{ .offset = .{ .x = 0, .y = 0 }, .extent = swap.extent },
-        .clear_value_count = clear_values.len,
-        .p_clear_values = &clear_values,
-    }, .@"inline");
+    const pre_dependency = vk.DependencyInfo{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&pre_barrier),
+    };
+
+    vkd.cmdPipelineBarrier2(cmdbuf, &pre_dependency);
+
+    // Begin dynamic rendering
+    const clear_f32 = phasor_common.Color.F32.fromColor(clear_color.color);
+    const color_attachment = vk.RenderingAttachmentInfo{
+        .image_view = swap.views[img_idx],
+        .image_layout = .color_attachment_optimal,
+        .resolve_mode = .{},
+        .resolve_image_view = .null_handle,
+        .resolve_image_layout = .undefined,
+        .load_op = .clear,
+        .store_op = .store,
+        .clear_value = .{
+            .color = .{
+                .float_32 = .{ clear_f32.r, clear_f32.g, clear_f32.b, clear_f32.a },
+            },
+        },
+    };
+
+    const depth_attachment = vk.RenderingAttachmentInfo{
+        .image_view = swap.depth_image_view.?,
+        .image_layout = .depth_stencil_attachment_optimal,
+        .resolve_mode = .{},
+        .resolve_image_view = .null_handle,
+        .resolve_image_layout = .undefined,
+        .load_op = .clear,
+        .store_op = .dont_care,
+        .clear_value = .{
+            .depth_stencil = .{ .depth = 0.0, .stencil = 0 },
+        },
+    };
+
+    const rendering_info = vk.RenderingInfo{
+        .flags = .{},
+        .render_area = .{
+            .offset = .{ .x = 0, .y = 0 },
+            .extent = swap.extent,
+        },
+        .layer_count = 1,
+        .view_mask = 0,
+        .color_attachment_count = 1,
+        .p_color_attachments = @ptrCast(&color_attachment),
+        .p_depth_attachment = &depth_attachment,
+        .p_stencil_attachment = null,
+    };
+
+    vkd.cmdBeginRendering(cmdbuf, &rendering_info);
 
     // Record draw calls for each shape type
     MeshRenderer.record(vkd, ctx, &rr.mesh_resources, cmdbuf, mesh_list);
@@ -325,7 +381,32 @@ fn recordCommandBuffer(
     CircleRenderer.record(vkd, ctx, &rr.circle_resources, cmdbuf, circle_count);
     RectangleRenderer.record(vkd, ctx, &rr.rectangle_resources, cmdbuf, rectangle_count);
 
-    vkd.cmdEndRenderPass(cmdbuf);
+    vkd.cmdEndRendering(cmdbuf);
+
+    // Transition swapchain image to present
+    const post_barrier = vk.ImageMemoryBarrier2{
+        .src_stage_mask = .{ .color_attachment_output_bit = true },
+        .dst_stage_mask = .{ .bottom_of_pipe_bit = true },
+        .old_layout = .color_attachment_optimal,
+        .new_layout = .present_src_khr,
+        .src_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .dst_queue_family_index = vk.QUEUE_FAMILY_IGNORED,
+        .image = swap.images[img_idx],
+        .subresource_range = .{
+            .aspect_mask = .{ .color_bit = true },
+            .base_mip_level = 0,
+            .level_count = 1,
+            .base_array_layer = 0,
+            .layer_count = 1,
+        },
+    };
+
+    const post_dependency = vk.DependencyInfo{
+        .image_memory_barrier_count = 1,
+        .p_image_memory_barriers = @ptrCast(&post_barrier),
+    };
+
+    vkd.cmdPipelineBarrier2(cmdbuf, &post_dependency);
     try vkd.endCommandBuffer(cmdbuf);
 }
 
@@ -351,8 +432,6 @@ fn deinit_system(r_device: ResOpt(DeviceResource), r_swap: ResOpt(SwapchainResou
                     .render_finished = rr.render_finished,
                 });
 
-                destroyFramebuffers(vkd, rr.allocator, rr.framebuffers);
-                vkd.destroyRenderPass(rr.render_pass, null);
                 freeCommandBuffers(vkd, rr.cmd_pool, rr.allocator, rr.cmd_buffers);
                 vkd.destroyCommandPool(rr.cmd_pool, null);
             }
@@ -406,76 +485,6 @@ fn destroySyncObjects(vkd: anytype, allocator: std.mem.Allocator, sync: SyncObje
     allocator.free(sync.render_finished);
 }
 
-fn createRenderPass(vkd: anytype, format: vk.Format) !vk.RenderPass {
-    const color_attachment = vk.AttachmentDescription{
-        .format = format,
-        .samples = .{ .@"1_bit" = true },
-        .load_op = .clear,
-        .store_op = .store,
-        .stencil_load_op = .dont_care,
-        .stencil_store_op = .dont_care,
-        .initial_layout = .undefined,
-        .final_layout = .present_src_khr,
-    };
-
-    const depth_attachment = vk.AttachmentDescription{
-        .format = .d32_sfloat,
-        .samples = .{ .@"1_bit" = true },
-        .load_op = .clear,
-        .store_op = .dont_care,
-        .stencil_load_op = .dont_care,
-        .stencil_store_op = .dont_care,
-        .initial_layout = .undefined,
-        .final_layout = .depth_stencil_attachment_optimal,
-    };
-
-    const attachments = [_]vk.AttachmentDescription{ color_attachment, depth_attachment };
-
-    const color_ref = vk.AttachmentReference{ .attachment = 0, .layout = .color_attachment_optimal };
-    const depth_ref = vk.AttachmentReference{ .attachment = 1, .layout = .depth_stencil_attachment_optimal };
-
-    const subpass = vk.SubpassDescription{
-        .pipeline_bind_point = .graphics,
-        .color_attachment_count = 1,
-        .p_color_attachments = @ptrCast(&color_ref),
-        .p_depth_stencil_attachment = &depth_ref,
-    };
-
-    return try vkd.createRenderPass(&.{
-        .attachment_count = attachments.len,
-        .p_attachments = &attachments,
-        .subpass_count = 1,
-        .p_subpasses = @ptrCast(&subpass),
-    }, null);
-}
-
-fn createFramebuffers(allocator: std.mem.Allocator, vkd: anytype, render_pass: vk.RenderPass, swap: *const SwapchainResource) ![]vk.Framebuffer {
-    const framebuffers = try allocator.alloc(vk.Framebuffer, swap.views.len);
-    errdefer allocator.free(framebuffers);
-
-    var i: usize = 0;
-    errdefer for (framebuffers[0..i]) |fb| vkd.destroyFramebuffer(fb, null);
-
-    for (framebuffers, 0..) |*fb, idx| {
-        const attachments = [_]vk.ImageView{ swap.views[idx], swap.depth_image_view.? };
-        fb.* = try vkd.createFramebuffer(&.{
-            .render_pass = render_pass,
-            .attachment_count = attachments.len,
-            .p_attachments = &attachments,
-            .width = swap.extent.width,
-            .height = swap.extent.height,
-            .layers = 1,
-        }, null);
-        i += 1;
-    }
-
-    return framebuffers;
-}
-
-fn destroyFramebuffers(vkd: anytype, allocator: std.mem.Allocator, framebuffers: []const vk.Framebuffer) void {
-    for (framebuffers) |fb| vkd.destroyFramebuffer(fb, null);
-    allocator.free(framebuffers);
-}
 
 fn allocateCommandBuffers(allocator: std.mem.Allocator, vkd: anytype, pool: vk.CommandPool, count: u32) ![]vk.CommandBuffer {
     const cmdbufs = try allocator.alloc(vk.CommandBuffer, count);

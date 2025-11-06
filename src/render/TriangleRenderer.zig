@@ -15,7 +15,8 @@ const RenderContext = @import("RenderContext.zig");
 pub fn init(
     vkd: anytype,
     dev_res: anytype,
-    render_pass: vk.RenderPass,
+    color_format: vk.Format,
+    depth_format: vk.Format,
     extent: vk.Extent2D,
     allocator: std.mem.Allocator,
 ) !ShapeRenderer.ShapeResources {
@@ -32,7 +33,7 @@ pub fn init(
     errdefer vkd.destroyPipelineLayout(pipeline_layout, null);
 
     // Create graphics pipeline
-    const pipeline = try createPipeline(vkd, pipeline_layout, render_pass, extent);
+    const pipeline = try createPipeline(vkd, pipeline_layout, color_format, depth_format, extent);
     errdefer vkd.destroyPipeline(pipeline, null);
 
     // Create vertex buffer
@@ -119,10 +120,12 @@ pub fn record(
 fn createPipeline(
     vkd: anytype,
     layout: vk.PipelineLayout,
-    render_pass: vk.RenderPass,
+    color_format: vk.Format,
+    depth_format: vk.Format,
     extent: vk.Extent2D,
 ) !vk.Pipeline {
     _ = extent;
+    _ = depth_format;
 
     const shaders = @import("shader_imports");
     const vert_spv = shaders.triangle_vert;
@@ -222,7 +225,17 @@ fn createPipeline(
         .p_dynamic_states = &dynamic_states,
     };
 
+    // Dynamic rendering info (Vulkan 1.3)
+    var rendering_info = vk.PipelineRenderingCreateInfo{
+        .view_mask = 0,
+        .color_attachment_count = 1,
+        .p_color_attachment_formats = @ptrCast(&color_format),
+        .depth_attachment_format = .undefined, // Triangles don't use depth
+        .stencil_attachment_format = .undefined,
+    };
+
     const pipeline_info = vk.GraphicsPipelineCreateInfo{
+        .p_next = &rendering_info,
         .flags = .{},
         .stage_count = 2,
         .p_stages = &shader_stages,
@@ -236,7 +249,7 @@ fn createPipeline(
         .p_color_blend_state = &color_blend,
         .p_dynamic_state = &dynamic_state,
         .layout = layout,
-        .render_pass = render_pass,
+        .render_pass = .null_handle,
         .subpass = 0,
         .base_pipeline_handle = .null_handle,
         .base_pipeline_index = -1,
