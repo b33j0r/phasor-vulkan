@@ -19,7 +19,7 @@
         },
         .stb = .{
             .url = "https://github.com/nothings/stb/archive/refs/heads/master.tar.gz",
-            .hash = "N-V-__8AACIvTgCTqOj6KM32YnqNx1bcsaMuGAeKQEIWZ8Ph",
+            .hash = "N-V-__8AABQ7TgCnPlp8MP4YA8znrjd6E-ZjpF1rvrS8J_2I",
         },
     },
     .minimum_zig_version = "0.15.1",
