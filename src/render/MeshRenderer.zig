@@ -1,7 +1,9 @@
 // ─────────────────────────────────────────────
 // Mesh Renderer
 // ─────────────────────────────────────────────
-// Renders 3D meshes with vertex and index buffers
+// Renders 3D meshes using vertex and index buffers with support for
+// texture mapping, lighting, and custom shaders. Uses perspective or
+// orthographic projection based on camera configuration.
 
 const MeshRenderer = @This();
 
@@ -25,6 +27,10 @@ pub const MeshResources = struct {
     max_vertices: u32,
     max_indices: u32,
 
+    // Lighting uniform buffer
+    light_buffer: vk.Buffer,
+    light_memory: vk.DeviceMemory,
+
     // Descriptor resources
     descriptor_set_layout: vk.DescriptorSetLayout,
     descriptor_pool: vk.DescriptorPool,
@@ -40,31 +46,40 @@ pub fn init(
 ) !MeshResources {
     _ = allocator;
 
-    // Create descriptor set layout for texture sampling
-    const sampler_binding = vk.DescriptorSetLayoutBinding{
-        .binding = 0,
-        .descriptor_type = .combined_image_sampler,
-        .descriptor_count = 1,
-        .stage_flags = .{ .fragment_bit = true },
-        .p_immutable_samplers = null,
+    // Create descriptor set layout for texture sampling + light UBO
+    const bindings = [_]vk.DescriptorSetLayoutBinding{
+        .{ // binding 0: texture sampler
+            .binding = 0,
+            .descriptor_type = .combined_image_sampler,
+            .descriptor_count = 1,
+            .stage_flags = .{ .fragment_bit = true },
+            .p_immutable_samplers = null,
+        },
+        .{ // binding 1: directional light uniform buffer
+            .binding = 1,
+            .descriptor_type = .uniform_buffer,
+            .descriptor_count = 1,
+            .stage_flags = .{ .fragment_bit = true },
+            .p_immutable_samplers = null,
+        },
     };
 
     const descriptor_set_layout = try vkd.createDescriptorSetLayout(&.{
-        .binding_count = 1,
-        .p_bindings = @ptrCast(&sampler_binding),
+        .binding_count = bindings.len,
+        .p_bindings = &bindings,
     }, null);
     errdefer vkd.destroyDescriptorSetLayout(descriptor_set_layout, null);
 
-    // Create descriptor pool
-    const pool_size = vk.DescriptorPoolSize{
-        .type = .combined_image_sampler,
-        .descriptor_count = 100,
+    // Create descriptor pool (samplers + uniform buffers)
+    const pool_sizes = [_]vk.DescriptorPoolSize{
+        .{ .type = .combined_image_sampler, .descriptor_count = 100 },
+        .{ .type = .uniform_buffer, .descriptor_count = 100 },
     };
 
     const descriptor_pool = try vkd.createDescriptorPool(&.{
         .flags = .{},
-        .pool_size_count = 1,
-        .p_pool_sizes = @ptrCast(&pool_size),
+        .pool_size_count = pool_sizes.len,
+        .p_pool_sizes = &pool_sizes,
         .max_sets = 100,
     }, null);
     errdefer vkd.destroyDescriptorPool(descriptor_pool, null);
@@ -93,15 +108,16 @@ pub fn init(
     const vertex_buffer_size = @sizeOf(components.MeshVertex) * max_vertices;
     const index_buffer_size = @sizeOf(u32) * max_indices;
 
-    // Create vertex buffer
-    const vertex_buffer = try vkd.createBuffer(&.{
-        .size = vertex_buffer_size,
-        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
+    // Create light uniform buffer (vec4)
+    const light_buffer_size: vk.DeviceSize = @sizeOf([4]f32);
+    const light_buffer = try vkd.createBuffer(&.{
+        .size = light_buffer_size,
+        .usage = .{ .uniform_buffer_bit = true },
         .sharing_mode = .exclusive,
     }, null);
-    errdefer vkd.destroyBuffer(vertex_buffer, null);
+    errdefer vkd.destroyBuffer(light_buffer, null);
 
-    const vertex_mem_reqs = vkd.getBufferMemoryRequirements(vertex_buffer);
+    const light_mem_reqs = vkd.getBufferMemoryRequirements(light_buffer);
     const ctx = RenderContext{
         .dev_res = dev_res,
         .cmd_pool = undefined,
@@ -111,6 +127,33 @@ pub fn init(
         .allocator = undefined,
         .upload_counter = undefined,
     };
+    const light_memory = try ctx.allocateMemory(vkd, light_mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
+    errdefer vkd.freeMemory(light_memory, null);
+    try vkd.bindBufferMemory(light_buffer, light_memory, 0);
+
+    // Initialize light to default direction
+    {
+        const default_dir = components.DirectionalLight{}; // uses default values
+        const len = @sqrt(default_dir.dir.x * default_dir.dir.x + default_dir.dir.y * default_dir.dir.y + default_dir.dir.z * default_dir.dir.z);
+        const ndx: f32 = if (len != 0) default_dir.dir.x / len else 0.0;
+        const ndy: f32 = if (len != 0) default_dir.dir.y / len else -1.0;
+        const ndz: f32 = if (len != 0) default_dir.dir.z / len else 0.0;
+        const data = [_]f32{ ndx, ndy, ndz, 0.0 };
+        const mapped = try vkd.mapMemory(light_memory, 0, light_buffer_size, .{});
+        defer vkd.unmapMemory(light_memory);
+        const p: [*]f32 = @ptrCast(@alignCast(mapped));
+        @memcpy(p[0..4], &data);
+    }
+
+    // Create vertex buffer
+    const vertex_buffer = try vkd.createBuffer(&.{
+        .size = vertex_buffer_size,
+        .usage = .{ .transfer_dst_bit = true, .vertex_buffer_bit = true },
+        .sharing_mode = .exclusive,
+    }, null);
+    errdefer vkd.destroyBuffer(vertex_buffer, null);
+
+    const vertex_mem_reqs = vkd.getBufferMemoryRequirements(vertex_buffer);
     const vertex_memory = try ctx.allocateMemory(vkd, vertex_mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(vertex_memory, null);
 
@@ -139,6 +182,8 @@ pub fn init(
         .index_memory = index_memory,
         .max_vertices = max_vertices,
         .max_indices = max_indices,
+        .light_buffer = light_buffer,
+        .light_memory = light_memory,
         .descriptor_set_layout = descriptor_set_layout,
         .descriptor_pool = descriptor_pool,
     };
@@ -149,6 +194,8 @@ pub fn deinit(vkd: anytype, resources: *const MeshResources) void {
     vkd.freeMemory(resources.index_memory, null);
     vkd.destroyBuffer(resources.vertex_buffer, null);
     vkd.freeMemory(resources.vertex_memory, null);
+    vkd.destroyBuffer(resources.light_buffer, null);
+    vkd.freeMemory(resources.light_memory, null);
     vkd.destroyPipeline(resources.pipeline_default, null);
     vkd.destroyPipelineLayout(resources.pipeline_layout, null);
     vkd.destroyDescriptorPool(resources.descriptor_pool, null);
@@ -314,18 +361,36 @@ pub fn record(
                         .image_layout = .shader_read_only_optimal,
                     };
 
-                    const write_descriptor = vk.WriteDescriptorSet{
-                        .dst_set = descriptor_set,
-                        .dst_binding = 0,
-                        .dst_array_element = 0,
-                        .descriptor_count = 1,
-                        .descriptor_type = .combined_image_sampler,
-                        .p_image_info = @ptrCast(&image_info),
-                        .p_buffer_info = undefined,
-                        .p_texel_buffer_view = undefined,
+                    const buffer_info = vk.DescriptorBufferInfo{
+                        .buffer = resources.light_buffer,
+                        .offset = 0,
+                        .range = @sizeOf([4]f32),
                     };
 
-                    vkd.updateDescriptorSets(1, @ptrCast(&write_descriptor), 0, undefined);
+                    const writes = [_]vk.WriteDescriptorSet{
+                        .{
+                            .dst_set = descriptor_set,
+                            .dst_binding = 0,
+                            .dst_array_element = 0,
+                            .descriptor_count = 1,
+                            .descriptor_type = .combined_image_sampler,
+                            .p_image_info = @ptrCast(&image_info),
+                            .p_buffer_info = undefined,
+                            .p_texel_buffer_view = undefined,
+                        },
+                        .{
+                            .dst_set = descriptor_set,
+                            .dst_binding = 1,
+                            .dst_array_element = 0,
+                            .descriptor_count = 1,
+                            .descriptor_type = .uniform_buffer,
+                            .p_image_info = undefined,
+                            .p_buffer_info = @ptrCast(&buffer_info),
+                            .p_texel_buffer_view = undefined,
+                        },
+                    };
+
+                    vkd.updateDescriptorSets(writes.len, &writes, 0, undefined);
                     vkd.cmdBindDescriptorSets(cmdbuf, .graphics, layout, 0, 1, @ptrCast(&descriptor_set), 0, undefined);
                 }
             }
@@ -503,6 +568,23 @@ fn cross(a: phasor_common.Vec3, b: phasor_common.Vec3) phasor_common.Vec3 {
 
 fn dot(a: phasor_common.Vec3, b: phasor_common.Vec3) f32 {
     return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+pub fn updateDirectionalLight(
+    vkd: anytype,
+    resources: *const MeshResources,
+    dir: phasor_common.Vec3,
+) void {
+    // Normalize and write to light uniform buffer as vec4 (xyz, 0)
+    const len = @sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    const ndx: f32 = if (len != 0) dir.x / len else 0.0;
+    const ndy: f32 = if (len != 0) dir.y / len else -1.0;
+    const ndz: f32 = if (len != 0) dir.z / len else 0.0;
+    const data = [_]f32{ ndx, ndy, ndz, 0.0 };
+    const mapped = vkd.mapMemory(resources.light_memory, 0, @sizeOf([4]f32), .{}) catch return;
+    defer vkd.unmapMemory(resources.light_memory);
+    const p: [*]f32 = @ptrCast(@alignCast(mapped));
+    @memcpy(p[0..4], &data);
 }
 
 fn createPipeline(

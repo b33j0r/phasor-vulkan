@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────
 // Rectangle Renderer
 // ─────────────────────────────────────────────
-// Renders filled rectangles with optional rotation and scaling.
-// Rectangles are positioned in window coordinates with Transform3d.
+// Renders filled rectangles with support for rotation and scaling.
+// Rectangles are positioned in window coordinates using Transform3d components.
 
 const RectangleRenderer = @This();
 

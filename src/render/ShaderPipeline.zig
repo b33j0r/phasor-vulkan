@@ -1,15 +1,15 @@
 // ─────────────────────────────────────────────
 // Shader Pipeline Utilities
 // ─────────────────────────────────────────────
-// Utilities for creating Vulkan graphics pipelines from shader code
+// Utilities for creating Vulkan graphics pipelines from compiled shader code.
+// Provides standardized pipeline creation for common rendering scenarios.
 
 const std = @import("std");
 const vk = @import("vulkan");
 const components = @import("../components.zig");
 
-/// Creates a graphics pipeline for mesh rendering with vertex colors
-/// Uses MeshVertex format from components.zig
-/// Uses dynamic rendering (Vulkan 1.3) instead of render pass
+/// Creates a graphics pipeline for mesh rendering with vertex colors.
+/// Uses the MeshVertex format from components.zig and dynamic rendering (Vulkan 1.3).
 pub fn createMeshPipeline(
     vkd: anytype,
     layout: vk.PipelineLayout,
@@ -150,7 +150,7 @@ pub fn createMeshPipeline(
         .blend_constants = [_]f32{ 0, 0, 0, 0 },
     };
 
-    // Dynamic rendering info (Vulkan 1.3)
+    // Dynamic rendering configuration
     var rendering_info = vk.PipelineRenderingCreateInfo{
         .view_mask = 0,
         .color_attachment_count = 1,

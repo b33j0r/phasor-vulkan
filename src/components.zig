@@ -22,7 +22,7 @@ pub fn Layer3d(N: i32) type {
 /// A grouping trait for Layer3d components.
 pub const Layer3dN = struct {};
 
-/// A 3D camera component with orthographic projection.
+/// 3D camera component.
 pub const Camera3d = union(enum) {
     /// An orthographic camera with traditional left/right/top/bottom bounds
     Orthographic: struct {
@@ -41,7 +41,7 @@ pub const Camera3d = union(enum) {
         far: f32 = 100.0,
     },
     /// Pixel-perfect camera using window coordinates
-    /// Window coordinates are DPI-independent (800x600 on all displays)
+    /// Window coordinates are DPI-independent
     /// The system automatically scales to fill the physical framebuffer
     Viewport: struct {
         mode: enum {
@@ -109,7 +109,7 @@ pub const SpriteVertex = extern struct {
     color: phasor_common.Color.F32,
 };
 
-/// 3D Transform component (simplified for now)
+/// 3D Transform
 /// Translation is in window coordinates for Viewport camera
 pub const Transform3d = struct {
     translation: phasor_common.Vec3 = .{},
@@ -262,7 +262,6 @@ pub const CustomShader = struct {
     shader: *const assets.Shader,
 };
 
-
 /// Orbit camera controller component (pure data)
 pub const OrbitCamera = struct {
     /// Distance from target
@@ -273,6 +272,13 @@ pub const OrbitCamera = struct {
     angle: f32 = 0.0,
     /// Target position to orbit around
     target: phasor_common.Vec3 = .{},
+};
+
+/// Directional light component for simple lighting in mesh shader
+/// The vector points from the light toward the scene (i.e., light direction)
+/// It will be normalized by the renderer when uploaded.
+pub const DirectionalLight = struct {
+    dir: phasor_common.Vec3 = .{ .x = 0.5, .y = -0.7, .z = 0.3 },
 };
 
 const std = @import("std");

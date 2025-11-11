@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────
 // Render Context
 // ─────────────────────────────────────────────
-// Shared rendering state and utilities passed to all shape renderers.
-// This provides common functionality like coordinate transformation,
-// camera handling, and Vulkan resource access.
+// Provides shared rendering state and utilities for all shape renderers,
+// including coordinate transformation, camera handling, memory allocation,
+// and buffer upload operations.
 
 const RenderContext = @This();
 
@@ -125,8 +125,8 @@ pub fn writeToMappedBuffer(
     @memcpy(dest_slice[0..data.len], data);
 }
 
-/// Upload vertex data to a device buffer using staging buffer
-/// Note: This function does NOT wait for completion - synchronization handled by frame fences
+/// Upload vertex data to a device buffer using a staging buffer
+/// Synchronization is handled by frame fences; this function does not wait for completion
 pub fn uploadToBuffer(
     self: RenderContext,
     vkd: anytype,

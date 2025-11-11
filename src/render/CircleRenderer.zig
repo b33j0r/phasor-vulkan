@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────
 // Circle Renderer
 // ─────────────────────────────────────────────
-// Renders filled circles using SDF (signed distance field) for smooth edges.
-// Circles are positioned in window coordinates with Transform3d.
+// Renders filled circles using signed distance fields for smooth anti-aliased edges.
+// Circles are positioned in window coordinates using Transform3d components.
 
 const CircleRenderer = @This();
 
@@ -137,15 +137,12 @@ fn collectCircle(
     const center = ctx.windowToClip(world_x, world_y);
     const depth = RenderContext.zToDepth(pos.z);
 
-    // Create quad vertices around the circle center
-    // We need to map circle space [-radius, radius] to clip space
-    // The fragment shader will use UV coords to draw the actual circle
+    // Map circle radius to clip space dimensions
+    // Fragment shader uses UV coordinates for SDF-based rendering
     const half_size_x = radius / (ctx.window_width / 2.0);
     const half_size_y = radius / (ctx.window_height / 2.0);
 
-    // Quad corners in clip space
-    // Create quad corners in clip space
-    // The vertex shader uses gl_VertexIndex to compute UV coordinates for SDF rendering
+    // Vertex shader computes UV coordinates from gl_VertexIndex for SDF evaluation
     const p1 = phasor_common.Vec3{ .x = center.x - half_size_x, .y = center.y - half_size_y, .z = depth };
     const p2 = phasor_common.Vec3{ .x = center.x + half_size_x, .y = center.y - half_size_y, .z = depth };
     const p3 = phasor_common.Vec3{ .x = center.x + half_size_x, .y = center.y + half_size_y, .z = depth };

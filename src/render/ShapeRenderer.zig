@@ -1,9 +1,8 @@
 // ─────────────────────────────────────────────
 // Shape Renderer Interface
 // ─────────────────────────────────────────────
-// Defines the interface that all shape renderers must implement.
-// Each shape type (Triangle, Sprite, Circle, Rectangle, etc.) implements
-// this interface to provide modular, self-contained rendering logic.
+// Defines the interface implemented by all shape renderers. Each shape type
+// provides modular, self-contained rendering logic through this unified interface.
 
 const std = @import("std");
 const vk = @import("vulkan");

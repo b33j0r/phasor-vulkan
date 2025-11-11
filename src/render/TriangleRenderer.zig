@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────
 // Triangle Renderer
 // ─────────────────────────────────────────────
-// Renders colored triangles using the basic triangle pipeline.
-// Triangles use 2D clip-space coordinates directly.
+// Renders colored triangles using 2D clip-space coordinates.
+// Provides basic geometry rendering without transforms or textures.
 
 const TriangleRenderer = @This();
 
@@ -22,7 +22,7 @@ pub fn init(
 ) !ShapeRenderer.ShapeResources {
     _ = allocator;
 
-    // Create pipeline layout (no descriptor sets)
+    // Create pipeline layout without descriptor sets
     const pipeline_layout = try vkd.createPipelineLayout(&.{
         .flags = .{},
         .set_layout_count = 0,
@@ -50,12 +50,12 @@ pub fn init(
     const mem_reqs = vkd.getBufferMemoryRequirements(buffer);
     const ctx = RenderContext{
         .dev_res = dev_res,
-        .cmd_pool = undefined, // Not needed for init
+        .cmd_pool = undefined,
         .window_width = 0,
         .window_height = 0,
         .camera_offset = .{},
         .allocator = undefined,
-        .upload_counter = undefined, // Not needed for init
+        .upload_counter = undefined,
     };
     const memory = try ctx.allocateMemory(vkd, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(memory, null);
@@ -173,9 +173,9 @@ fn createPipeline(
 
     const viewport_state = vk.PipelineViewportStateCreateInfo{
         .viewport_count = 1,
-        .p_viewports = undefined, // Dynamic
+        .p_viewports = undefined,
         .scissor_count = 1,
-        .p_scissors = undefined, // Dynamic
+        .p_scissors = undefined,
     };
 
     const rasterization = vk.PipelineRasterizationStateCreateInfo{
@@ -225,12 +225,11 @@ fn createPipeline(
         .p_dynamic_states = &dynamic_states,
     };
 
-    // Dynamic rendering info (Vulkan 1.3)
     var rendering_info = vk.PipelineRenderingCreateInfo{
         .view_mask = 0,
         .color_attachment_count = 1,
         .p_color_attachment_formats = @ptrCast(&color_format),
-        .depth_attachment_format = .undefined, // Triangles don't use depth
+        .depth_attachment_format = .undefined,
         .stencil_attachment_format = .undefined,
     };
 

@@ -1,21 +1,21 @@
 // ─────────────────────────────────────────────
-// Render Plugin (Modular Version)
+// Render Plugin
 // ─────────────────────────────────────────────
 // Implements a modular Vulkan rendering pipeline where each shape type
-// (Triangle, Sprite, Text, Circle, Rectangle) is handled by a dedicated
-// renderer module. This architecture makes adding new shapes trivial.
+// is handled by a dedicated renderer module. This architecture provides
+// extensibility through a unified interface for all shape renderers.
 //
-// Key Features:
+// Features:
 // - Modular shape renderers with unified interface
 // - Centralized resource management
-// - Clean separation of concerns
-// - Easy extensibility - just add a new ShapeRenderer
+// - Separation of concerns between core rendering and shape-specific logic
+// - Dynamic rendering using Vulkan 1.3
 //
 // Architecture:
-// 1. RenderPlugin manages core Vulkan resources (render pass, framebuffers, sync)
-// 2. Each shape type has a dedicated renderer (TriangleRenderer, SpriteRenderer, etc.)
-// 3. RenderContext provides shared utilities (coordinate transforms, camera, upload)
-// 4. Rendering flow: init → collect → upload → record → present
+// - RenderPlugin manages core Vulkan resources (command buffers, synchronization)
+// - Each shape type has a dedicated renderer (TriangleRenderer, SpriteRenderer, etc.)
+// - RenderContext provides shared utilities (coordinate transforms, camera access)
+// - Rendering flow: initialize → collect → upload → record → present
 
 const RenderPlugin = @This();
 
@@ -138,6 +138,7 @@ fn render_system(
     q_rectangles: Query(.{ components.Rectangle, Transform3d }),
     q_meshes: Query(.{ components.Mesh, Transform3d }),
     q_cameras: Query(.{ components.Camera3d, Transform3d }),
+    q_lights: Query(.{ components.DirectionalLight }),
 ) !void {
     _ = commands;
 
@@ -188,6 +189,15 @@ fn render_system(
         .allocator = rr.allocator,
         .upload_counter = &rr.upload_count,
     };
+
+    // Update directional light uniform from ECS (falls back to default if absent)
+    var light_dir = (components.DirectionalLight{}).dir;
+    var light_it = q_lights.iterator();
+    if (light_it.next()) |e| {
+        if (e.get(components.DirectionalLight)) |dl|
+            light_dir = dl.dir;
+    }
+    MeshRenderer.updateDirectionalLight(vkd, &rr.mesh_resources, light_dir);
 
     // Reset descriptor pools for this frame (before allocating new descriptor sets)
     if (rr.sprite_resources.descriptor_pool) |pool| {

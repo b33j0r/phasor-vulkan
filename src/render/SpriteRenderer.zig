@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────
 // Sprite Renderer
 // ─────────────────────────────────────────────
-// Renders textured sprites and text with batching by texture.
-// Supports depth testing, rotation, scaling, and alpha blending.
-// Text is rendered as a special case of sprites using font atlases.
+// Renders textured sprites and text with automatic batching by texture.
+// Supports depth testing, rotation, scaling, and alpha blending. Text rendering
+// uses font atlases with per-glyph positioning and alignment control.
 
 const SpriteRenderer = @This();
 
@@ -16,14 +16,14 @@ const Transform3d = components.Transform3d;
 const ShapeRenderer = @import("ShapeRenderer.zig");
 const RenderContext = @import("RenderContext.zig");
 
-/// Sprite batch groups all vertices for sprites sharing the same texture
+/// Groups vertices for sprites sharing the same texture
 const SpriteBatch = struct {
     texture: *const assets.Texture,
     vertices: std.ArrayList(components.SpriteVertex),
-    vertex_offset: u32 = 0, // Offset into combined vertex buffer
+    vertex_offset: u32 = 0,
 };
 
-/// Temporary state used during collection phase
+/// Temporary state during the collection phase
 pub const CollectionState = struct {
     batches: std.ArrayList(SpriteBatch),
     all_vertices: std.ArrayList(components.SpriteVertex),
@@ -112,7 +112,7 @@ pub fn init(
         .allocator = undefined,
         .upload_counter = undefined,
     };
-    // Use HOST_VISIBLE memory to avoid staging buffers and sync issues
+    // Use host-visible memory for direct writes without staging buffers
     const memory = try ctx.allocateMemory(vkd, mem_reqs, .{ .host_visible_bit = true, .host_coherent_bit = true });
     errdefer vkd.freeMemory(memory, null);
 
@@ -266,8 +266,7 @@ fn collectSprite(
     const pos = transform.translation;
     const scale = transform.scale;
 
-    // Swap width and height to match texture orientation
-    // Texture points up, so its width becomes our height and vice versa
+    // Swap width and height for texture orientation (texture up orientation)
     const half_w = (sprite_height * scale.y) / 2.0;
     const half_h = (sprite_width * scale.x) / 2.0;
 
@@ -305,8 +304,7 @@ fn collectSprite(
     const p3_clip = toClip(p3_window.x, p3_window.y, camera_relative_x, camera_relative_y, ctx.window_width, ctx.window_height);
     const p4_clip = toClip(p4_window.x, p4_window.y, camera_relative_x, camera_relative_y, ctx.window_width, ctx.window_height);
 
-    // Add two triangles forming a quad
-    // UV rotated 90° CW: texture pointing up in image → sprite pointing up on screen
+    // Construct quad from two triangles with 90° clockwise UV rotation
     try batch.vertices.append(ctx.allocator, .{ .pos = .{ .x = p1_clip.x, .y = p1_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 1.0 }, .color = color });
     try batch.vertices.append(ctx.allocator, .{ .pos = .{ .x = p2_clip.x, .y = p2_clip.y, .z = depth }, .uv = .{ .x = 0.0, .y = 0.0 }, .color = color });
     try batch.vertices.append(ctx.allocator, .{ .pos = .{ .x = p3_clip.x, .y = p3_clip.y, .z = depth }, .uv = .{ .x = 1.0, .y = 0.0 }, .color = color });
@@ -484,7 +482,7 @@ fn createPipeline(
         .depth_clamp_enable = .false,
         .rasterizer_discard_enable = .false,
         .polygon_mode = .fill,
-        .cull_mode = .{}, // No culling for sprites
+        .cull_mode = .{},
         .front_face = .clockwise,
         .depth_bias_enable = .false,
         .depth_bias_constant_factor = 0,

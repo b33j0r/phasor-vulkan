@@ -7,10 +7,11 @@ layout(location = 2) in vec2 fragUV;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D texSampler;
+layout(set = 0, binding = 1) uniform LightUBO { vec4 lightDir; } ubo;
 
 void main() {
-    // Simple directional lighting
-    vec3 lightDir = normalize(vec3(0.5, -0.7, 0.3));
+    // Directional lighting from uniform (direction points from light toward scene)
+    vec3 lightDir = normalize(ubo.lightDir.xyz);
     vec3 normal = normalize(fragNormal);
     float diff = max(dot(normal, -lightDir), 0.0);
 
